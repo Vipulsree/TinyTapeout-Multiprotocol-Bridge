@@ -1,0 +1,60 @@
+# Tiny Tapeout project information
+project:
+  title:        "Six-mode UART/SPI/I2C bridge"      # Project title
+  author:       "Vipul S and team"                   # TODO: list all four team members
+  discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
+  description:  "One tile that bridges any host/device pair of UART, SPI and I2C, selected by pins"
+  language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
+  clock_hz:     25000000       # Clock frequency in Hz (or 0 if not applicable)
+
+  # How many tiles your design occupies? A single tile is about 167x108 uM.
+  tiles: "1x1"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2
+
+  # Your top module name must start with "tt_um_". Make it unique by including your github username:
+  top_module:  "tt_um_mpbridge"   # TODO: consider tt_um_<github user>_mpbridge before submission
+
+  # List your project's source files here.
+  # Source files must be in ./src and you must list each source file separately, one per line.
+  # Don't forget to also update `PROJECT_SOURCES` in test/Makefile.
+  source_files:
+    - "project.v"
+    - "sync2_edge.v"
+    - "cmd_ctrl.v"
+    - "fifo4x8.v"
+    - "timeout20.v"
+
+# The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
+# This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).
+pinout:
+  # Inputs
+  ui[0]: "MODE[0]"
+  ui[1]: "MODE[1]"
+  ui[2]: "MODE[2]"
+  ui[3]: "UART_RX"
+  ui[4]: "BAUD_SEL[0]"
+  ui[5]: "BAUD_SEL[1]"
+  ui[6]: "I2C_ADDR_LSB"
+  ui[7]: "I2C_FAST"
+
+  # Outputs
+  uo[0]: "DBG_STATE[0]"
+  uo[1]: "DBG_STATE[1]"
+  uo[2]: "DBG_STATE[2]"
+  uo[3]: "DBG_STATE[3]"
+  uo[4]: "UART_TX"
+  uo[5]: "IRQ"
+  uo[6]: "BUSY"
+  uo[7]: "ERR"
+
+  # Bidirectional pins
+  uio[0]: "SPI_CS_N"
+  uio[1]: "SPI_MOSI"
+  uio[2]: "SPI_MISO"
+  uio[3]: "SPI_SCK"
+  uio[4]: ""
+  uio[5]: ""
+  uio[6]: "I2C_SCL"
+  uio[7]: "I2C_SDA"
+
+# Do not change!
+yaml_version: 6
