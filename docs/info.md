@@ -20,6 +20,11 @@ the request goes out, the response comes back.
 | 110 | Loopback self-test (UART echo) | - |
 | 111 | Safe idle: all outputs low, nothing driven | - |
 
+Bus settings: UART 8N1 at 9600-115200 baud (`BAUD_SEL`); SPI mode 0, as master
+at 391 kHz-3.125 MHz (chosen per command) or as slave up to 2 MHz SCK; I2C at
+standard or fast mode (99.2 or 367.6 kHz, `I2C_FAST`) as controller, or as target at
+0x2C / 0x2D.
+
 Every transaction starts with a 2-byte header:
 
 - **CMD:** bits 7:6 = op (00 write, 01 read, 10 write 1 byte then read, 11 status);
@@ -38,6 +43,11 @@ stretching) is aborted. Both set the timeout bit and `ERR`.
 
 Example (mode 001): send `81 48 00` over UART to read 2 bytes from register 0x00
 of an I2C sensor at 0x48; the bridge answers with the 2 bytes.
+
+SPI and I2C hosts send the command in one transfer (a CS-low frame, or an I2C
+write), wait for `IRQ`, then read the response in a second transfer (SPI: a new
+CS-low frame, MOSI ignored; I2C: a read, which the bridge NACKs until the
+response is ready). A UART host just keeps listening: the response follows on TX.
 
 ## How to test
 

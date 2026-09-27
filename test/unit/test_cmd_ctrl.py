@@ -207,6 +207,25 @@ async def test_framed_host_readout(dut):
 
 
 @cocotb.test()
+async def test_framed_host_takes_count_only_in_readout(dut):
+    env = await Env(dut).setup(host_uart=0)
+    env.reads = [0x0A, 0x0B]
+    await env.send(cmd(OP_READ, 2), 0x48)
+    await env.wait_state(S_RESPOND)
+    # The SPI slave loads a byte at the end of the command frame: not a read-out yet
+    await env.pulse("h_tx_take")
+    await env.pulse("h_frame_end")
+    assert int(dut.state.value) == S_RESPOND and int(dut.h_tx_data.value) == 0x0A
+    # SPI read-out: CS fall loads the first byte in the same cycle as the frame start
+    await env.pulse("h_tx_take", h_frame_start=1, h_frame_rd=1)
+    assert int(dut.h_tx_data.value) == 0x0B
+    await env.pulse("h_tx_take")
+    assert int(dut.h_tx_valid.value) == 0
+    await env.pulse("h_frame_end")
+    assert int(dut.state.value) == S_IDLE
+
+
+@cocotb.test()
 async def test_framed_host_short_frame_aborts(dut):
     env = await Env(dut).setup(host_uart=0)
     await env.send(cmd(OP_WRITE, 2))

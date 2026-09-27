@@ -19,7 +19,8 @@ TEST = Path(__file__).resolve().parent
 SRC = TEST.parent / "src"
 UNIT = TEST / "unit"
 
-TOP_SOURCES = [SRC / f for f in ("project.v", "sync2_edge.v", "cmd_ctrl.v", "fifo4x8.v", "timeout20.v")]
+TOP_SOURCES = [SRC / f for f in ("project.v", "sync2_edge.v", "cmd_ctrl.v", "fifo4x8.v", "timeout20.v",
+                                  "clkdiv.v", "uart_trx.v", "spi_ms.v", "i2c_engine.v")]
 
 # suite: (hdl toplevel, sources, directory of the test module, test module, parameters)
 SUITES = {
@@ -31,6 +32,12 @@ SUITES = {
     "timeout20": ("timeout20", [SRC / "timeout20.v"], UNIT, "test_timeout20", {}),
     "cmd_ctrl": ("cmd_ctrl", [SRC / "cmd_ctrl.v", SRC / "fifo4x8.v", SRC / "timeout20.v"], UNIT,
                  "test_cmd_ctrl", {}),
+    "uart_trx": ("tb_uart_trx", [SRC / "uart_trx.v", SRC / "sync2_edge.v", UNIT / "tb_uart_trx.v"], UNIT,
+                 "test_uart_trx", {}),
+    "spi_ms": ("tb_spi_ms", [SRC / "spi_ms.v", SRC / "sync2_edge.v", SRC / "clkdiv.v", UNIT / "tb_spi_ms.v"],
+               UNIT, "test_spi_ms", {}),
+    "i2c_engine": ("tb_i2c_engine", [SRC / "i2c_engine.v", SRC / "sync2_edge.v", SRC / "clkdiv.v",
+                                     UNIT / "tb_i2c_engine.v"], UNIT, "test_i2c_engine", {}),
     "limits": ("tt_um_mpbridge", TOP_SOURCES, UNIT, "test_limits", {}),
     "i2c_model": ("tb_i2c_model", [UNIT / "tb_i2c_model.v"], UNIT, "test_i2c_model", {}),
 }

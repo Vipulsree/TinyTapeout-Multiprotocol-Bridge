@@ -1,8 +1,7 @@
 # Track A architecture and engine contract
 
-This is the internal contract between `cmd_ctrl` and the three protocol engines.
-Build `uart_trx`, `spi_ms` and `i2c_engine` against it so they plug into
-`project.v` without changes to the controller.
+This is the internal contract between `cmd_ctrl` and the three protocol engines
+`uart_trx`, `spi_ms` and `i2c_engine`, plus notes on how each engine works.
 
 ## Blocks and status
 
@@ -10,13 +9,13 @@ Build `uart_trx`, `spi_ms` and `i2c_engine` against it so they plug into
 | --- | --- | --- | --- |
 | `sync2_edge` | M2 | Done, unit-tested | 7 inputs; SCL/SDA have the 2-sample glitch filter |
 | `fifo4x8` | M1 | Done, unit-tested | First-word fall-through; reads 0x00 when empty |
-| `clkdiv` | M2 | Done, unit-tested | Not wired yet; `spi_ms` and `i2c_engine` use it |
+| `clkdiv` | M2 | Done, unit-tested | Shared by the SPI master and the I2C controller |
 | `cmd_ctrl` | M1 | Done, unit-tested | Header parser + FSM + FIFO + status flags + timeouts |
 | `timeout20` | M1 | Done, unit-tested | 20-bit inactivity timer (max 41.9 ms), used by `cmd_ctrl` |
-| `project.v` | M1 | Skeleton | Mode latch, pin directions, engines tied off |
-| `uart_trx` | M1 | Weeks 4-5 | 8N1, divisor from BAUD_SEL |
-| `spi_ms` | M2 | Weeks 4-5 | Mode 0 master and slave on one shift register |
-| `i2c_engine` | M2 | Week 6 | Controller and target on one shift register |
+| `uart_trx` | M1 | Done, unit-tested | 8N1, divisor from BAUD_SEL; host, device and loopback roles |
+| `spi_ms` | M2 | Done, unit-tested | Mode 0 master and slave on one shift register |
+| `i2c_engine` | M2 | Done, unit-tested | Controller and target on one shift register |
+| `project.v` | M1 | Done | Mode latch, engine wiring, pin directions; mode matrix passes |
 
 ## Clock and signal rules
 
@@ -24,7 +23,10 @@ Build `uart_trx`, `spi_ms` and `i2c_engine` against it so they plug into
   use the synchronised level `q` and the one-cycle `rise` / `fall` pulses.
 - Every `*_valid`, `*_take`, `*_push`, `*_pop`, `d_start`, `d_done` and
   `d_nack` is a **one-cycle pulse**. Data travels in the same cycle as its pulse.
-- A byte is MSB first on every bus.
+- A byte is MSB first on SPI and I2C. UART is LSB first, as every UART sends.
+- Every pin the design drives comes straight from a flip-flop (UART_TX, SCK,
+  CS_N, MISO, and the I2C pull-downs), so a decode glitch can never look like a
+  clock edge or a START on a bus.
 
 ## Host engine <-> cmd_ctrl
 
@@ -56,6 +58,10 @@ Per host type:
   ACK a write only if `can_write`, a read only if `can_read`; otherwise NACK.
   After an ACK, pulse `h_frame_start` with `h_frame_rd` = R/W. Pulse
   `h_rx_valid` per written byte, `h_tx_take` per byte sent, `h_frame_end` on STOP.
+
+For SPI and I2C hosts, `cmd_ctrl` counts `h_tx_take` only inside a read-out
+frame (or in the cycle that opens one). The SPI slave loads a byte at the end of
+every frame, including the command frame, and that load must not use up the response.
 
 ## Device engine <-> cmd_ctrl
 
@@ -133,13 +139,37 @@ Keep `TO_HOST_UART_CHARS` at 40 or less, or the 9600-baud value overflows 20 bit
 | any I2C role | bit 6 / 7 set only to pull SCL / SDA low | open-drain; `uio_out[7:6]` is always 0 |
 | 111 | 0x00, and `uo_out` = 0x00 | none |
 
+## Engine notes
+
+**uart_trx.** The receiver starts on a falling edge of the synchronised RX line,
+checks the start bit half a bit later and samples every bit in its middle; a 0
+stop bit pulses `frame_err` and drops the byte. The transmitter accepts the next
+byte during the stop bit of the current one and starts it straight after, so
+responses stream back to back and the mode 110 echo keeps up with a host that
+sends back to back. In mode 110 every received byte is echoed and `cmd_ctrl` sees nothing.
+
+**spi_ms.** Master: CS_N falls, then half an SCK period later the first rising
+edge. MOSI changes on falling edges. MISO is sampled late, at the falling edge,
+through the synchroniser, which leaves nearly the whole SCK period for the
+peripheral's output delay; half an SCK period after the last falling edge CS_N rises.
+Slave: MOSI is sampled on the synchronised SCK rise and MISO changes about three
+clocks after SCK falls. `h_rx_valid` fires on the 8th rising edge; the next
+response byte is loaded on the 8th falling edge.
+
+**i2c_engine.** Controller: every START, STOP and bit is a symbol of four
+`clkdiv` quarter periods (A: SCL low, SDA changes; B: SCL released, held while a
+device stretches it; C: SCL high; D: SCL low). SDA is sampled at the B-to-C tick.
+`d_abort` finishes with a STOP symbol that no longer waits for a stretched clock.
+Target: shifts on SCL rise, changes SDA only after SCL falls, ACKs its address
+only when `cmd_ctrl` can take the transfer, and never stretches the clock.
+
 ## Open items
 
-- Done: a UART host that loses a byte no longer desynchronises the parser; the
-  host timeout drops the partial command after 16 idle characters.
+- Done: the mode latch also waits for every engine to be idle (no UART byte in
+  flight, no SPI frame, no I2C transfer).
+- Area: 244 flip-flops in the finished RTL against the plan's estimate of 219
+  (the engines use 118, the plan budgeted 95). Check utilisation in the first
+  full hardening run and apply the relief valves in the plan's order if it is above 62%.
 - The timer adds roughly 100-150 cells (20 flip-flops, incrementer, comparator,
-  limit mux). Check it in the week-3 hardening run; if area is short, lower `W`
-  in `timeout20` (for example 18 bits still covers 10 ms) and shrink the limits.
-- The mode latch waits for `cmd_ctrl` idle; once the engines exist it should
-  also wait for the active host engine to be idle (no SPI frame or I2C
-  transfer in progress).
+  limit mux). If area is short, lower `W` in `timeout20` (for example 18 bits
+  still covers 10 ms) and shrink the limits.

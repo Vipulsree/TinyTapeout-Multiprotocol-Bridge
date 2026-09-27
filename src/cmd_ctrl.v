@@ -96,7 +96,11 @@ module cmd_ctrl (
   wire dev_push = d_rd_push & dev_ok;
   wire fifo_push = host_push | dev_push;
   wire [7:0] fifo_wdata = host_push ? h_rx_data : d_rd_data;
-  wire rsp_pop = (st == S_RESPOND) & h_tx_take & ~rsp_status & (rem != 3'd0);
+  // Framed hosts consume response bytes only inside a read-out frame: the SPI
+  // slave also loads a byte at the end of the command frame, which must not count.
+  wire rsp_live = host_uart | reading | (h_frame_start & h_frame_rd);
+  wire rsp_take = (st == S_RESPOND) & h_tx_take & rsp_live;
+  wire rsp_pop = rsp_take & ~rsp_status & (rem != 3'd0);
   wire fifo_pop = d_wr_pop | rsp_pop;
   // Keep buffered UART RX bytes for a read or status; otherwise start clean.
   wire keep_fifo = dev_uart & ((d_op == OP_READ) | (d_op == OP_STATUS));
@@ -231,7 +235,7 @@ module cmd_ctrl (
         end
 
         S_RESPOND: begin
-          if (h_tx_take && rem != 3'd0) rem <= rem - 3'd1;
+          if (rsp_take && rem != 3'd0) rem <= rem - 3'd1;
           if (to_exp) begin  // host stopped reading (or the UART host engine stalled)
             st        <= S_IDLE;
             f_timeout <= 1'b1;
