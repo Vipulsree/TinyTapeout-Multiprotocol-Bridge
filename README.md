@@ -16,11 +16,11 @@ Course: EC373TA VLSI Physical Design. Track B (the I3C bridge) lives in its own 
 | --- | --- | --- |
 | 1 | Repo, pin map, header format, test setup, I²C bus models | Done |
 | 2 | `cmd_ctrl`, `fifo4x8`, `sync2_edge`, `clkdiv` with unit tests | Done |
-| 2 | 20-bit timeout (`timeout20`), limits per mode and baud rate | Done |
+| 2 | Timeout (`timeout20`), limits per mode and baud rate | Done |
 | 3 | Push to GitHub, skeleton hardened in CI | Done (26 Sep) |
 | 4–5 | `uart_trx` (M1), `spi_ms` master/slave (M2) | Done early (27 Sep) |
 | 6 | `i2c_engine` controller/target (M2), mode 110 loopback | Done early (27 Sep) |
-| 7–8 | Full RTL hardened (area, timing), mode matrix 24/24 | Matrix passes in simulation; hardening next |
+| 7–8 | Full RTL hardened (area, timing), mode matrix 24/24 | Matrix passes; **does not fit 1x1 (108%)**, see below |
 | 8–9 | Formal properties F1–F5, FPGA dry run | To do |
 | 10–12 | Gate-level sim, sign-off, datasheet, submit | To do |
 
@@ -30,7 +30,13 @@ The top level runs all six modes × {write, read, write-then-read, status}, the
 mode 110 echo, error flags, timeouts and the idle-only mode latch.
 
 Timeout limits live at the top of `src/project.v`; see the Timeouts section of
-[docs/architecture.md](docs/architecture.md) for the formulas and how to change them.
+[docs/architecture.md](docs/architecture.md) for the values and how to change them.
+
+**Area:** the complete design needs 108% of a 1x1 tile after two area
+optimisations (shared UART prescaler, power-of-two timeouts). Fitting 1x1 would
+mean dropping timeouts and several modes, so Track A is paused pending a
+decision on a 1x2 tile. Numbers per step: Open items in
+[docs/architecture.md](docs/architecture.md).
 
 ## Layout
 

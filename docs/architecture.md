@@ -11,8 +11,8 @@ This is the internal contract between `cmd_ctrl` and the three protocol engines
 | `fifo4x8` | M1 | Done, unit-tested | First-word fall-through; reads 0x00 when empty |
 | `clkdiv` | M2 | Done, unit-tested | Shared by the SPI master and the I2C controller |
 | `cmd_ctrl` | M1 | Done, unit-tested | Header parser + FSM + FIFO + status flags + timeouts |
-| `timeout20` | M1 | Done, unit-tested | 20-bit inactivity timer (max 41.9 ms), used by `cmd_ctrl` |
-| `uart_trx` | M1 | Done, unit-tested | 8N1, divisor from BAUD_SEL; host, device and loopback roles |
+| `timeout20` | M1 | Done, unit-tested | 21-bit inactivity timer, power-of-two limits (max 41.9 ms), used by `cmd_ctrl` |
+| `uart_trx` | M1 | Done, unit-tested | 8N1, one shared baud prescaler; host, device and loopback roles |
 | `spi_ms` | M2 | Done, unit-tested | Mode 0 master and slave on one shift register |
 | `i2c_engine` | M2 | Done, unit-tested | Controller and target on one shift register |
 | `project.v` | M1 | Done | Mode latch, engine wiring, pin directions; mode matrix passes |
@@ -96,10 +96,12 @@ the controller buffers it (IRQ goes high) or drops it when not allowed.
 
 ## Timeouts
 
-One 20-bit counter in `cmd_ctrl` (module `timeout20`) runs whenever the
+One 21-bit counter in `cmd_ctrl` (module `timeout20`) runs whenever the
 controller is waiting on someone. Every handshake pulse restarts it, so a limit
 is "this long with no progress", not a limit on the whole transaction.
-At 25 MHz the 20 bits reach 1,048,575 clocks = 41.9 ms; a limit of 0 disables it.
+Every limit is a power of two, so expiry is one counter bit (`cnt & limit`)
+rather than a 21-bit comparison; a limit of 0 disables it. This saved about
+630 um2 against arbitrary 20-bit limits.
 
 | Waiting in | On expiry | Status bit 4 (TIMEOUT) |
 | --- | --- | --- |
@@ -109,23 +111,23 @@ At 25 MHz the 20 bits reach 1,048,575 clocks = 41.9 ms; a limit of 0 disables it
 | RESPOND, read-out frame open or UART host sending | Drop the rest of the response, back to IDLE | Set |
 | RESPOND before an SPI / I2C host starts reading | Never times out: those hosts may poll IRQ as long as they like | - |
 
-The limits are constants at the top of `src/project.v`; change them there.
-UART limits scale with BAUD_SEL, bus limits cover the worst-case transfer time.
+The limits are constants at the top of `src/project.v`; change them there,
+keeping each one a power of two. UART limits scale with BAUD_SEL (a character
+is 10 bits of 2604 / 1302 / 434 / 217 clocks), bus limits cover the worst-case
+transfer time.
 
-| Limit | Formula | 9600 | 19200 | 57600 | 115200 |
-| --- | --- | --- | --- | --- | --- |
-| Host UART (`TO_HOST_UART_CHARS` = 16) | divisor x 10 bits x 16 | 416,640 (16.7 ms) | 208,320 | 69,440 | 34,720 (1.4 ms) |
-| UART device reply window (`TO_DEV_UART_CHARS` = 8) | divisor x 10 bits x 8 | 208,320 (8.3 ms) | 104,160 | 34,720 | 17,360 (0.7 ms) |
-| SPI / I2C host, I2C device (`TO_BUS`) | 35 ms, the SMBus tTIMEOUT max; covers I2C clock stretching | 875,000 | | | |
-| SPI device (`TO_SPI_DEV`) | worst 5-byte transfer at SCK/64 is 2,560 clocks | 65,535 (2.6 ms) | | | |
-
-Keep `TO_HOST_UART_CHARS` at 40 or less, or the 9600-baud value overflows 20 bits.
+| Limit | 9600 | 19200 | 57600 | 115200 |
+| --- | --- | --- | --- | --- |
+| Host UART silence (`TO_HOST_UART_*`) | 2^19 = 20 chars (21 ms) | 2^18 = 20 chars | 2^16 = 15 chars | 2^15 = 15 chars (1.3 ms) |
+| UART device reply window (`TO_DEV_UART_*`) | 2^18 = 10 chars (10.5 ms) | 2^17 = 10 chars | 2^15 = 7.5 chars | 2^14 = 7.5 chars (0.66 ms) |
+| SPI / I2C host, I2C device (`TO_BUS`) | 2^20 = 41.9 ms, above the SMBus tTIMEOUT (25-35 ms); covers clock stretching | | | |
+| SPI device (`TO_SPI_DEV`) | 2^16 = 2.6 ms; the worst 5-byte transfer at SCK/64 takes 2,560 clocks | | | |
 
 ## Rates (25 MHz clock)
 
 | Interface | Setting | Rate |
 | --- | --- | --- |
-| UART | divisor 217 / 434 / 1302 / 2604 (BAUD_SEL 11 / 10 / 01 / 00) | 115,207 / 57,604 / 19,201 / 9,600.6 baud |
+| UART | 7 prescaler ticks per bit, a tick every 31 x 1 / 2 / 6 / 12 clocks (BAUD_SEL 11 / 10 / 01 / 00) | 115,207 / 57,604 / 19,201 / 9,600.6 baud |
 | I2C controller | `clkdiv` quarter-period, `div_m1` = 62 or 16 | 99.2 kHz or 367.6 kHz |
 | SPI master | `clkdiv` half-period, `div_m1` = (4 << d_spi_div) - 1 | 3.125 MHz ... 391 kHz |
 | SPI slave | synchronised SCK | <= 2 MHz guaranteed |
@@ -141,9 +143,12 @@ Keep `TO_HOST_UART_CHARS` at 40 or less, or the 9600-baud value overflows 20 bit
 
 ## Engine notes
 
-**uart_trx.** The receiver starts on a falling edge of the synchronised RX line,
-checks the start bit half a bit later and samples every bit in its middle; a 0
-stop bit pulses `frame_err` and drops the byte. The transmitter accepts the next
+**uart_trx.** One free-running prescaler ticks 7 times per bit and serves both
+directions; each side counts ticks with a 3-bit phase counter (this replaced two
+12-bit bit timers and saved about 1,300 um2). The receiver starts on a falling
+edge of the synchronised RX line and samples each bit within 1/7 of a bit of its
+middle; a 0 stop bit pulses `frame_err` and drops the byte. The first start bit
+the transmitter sends may be up to 1/7 of a bit short. The transmitter accepts the next
 byte during the stop bit of the current one and starts it straight after, so
 responses stream back to back and the mode 110 echo keeps up with a host that
 sends back to back. In mode 110 every received byte is echoed and `cmd_ctrl` sees nothing.
@@ -167,9 +172,18 @@ only when `cmd_ctrl` can take the transfer, and never stretches the clock.
 
 - Done: the mode latch also waits for every engine to be idle (no UART byte in
   flight, no SPI frame, no I2C transfer).
-- Area: 244 flip-flops in the finished RTL against the plan's estimate of 219
-  (the engines use 118, the plan budgeted 95). Check utilisation in the first
-  full hardening run and apply the relief valves in the plan's order if it is above 62%.
-- The timer adds roughly 100-150 cells (20 flip-flops, incrementer, comparator,
-  limit mux). If area is short, lower `W` in `timeout20` (for example 18 bits
-  still covers 10 ms) and shrink the limits.
+- **Area: does not fit a 1x1 tile yet (paused for a decision on 1x2).**
+  CI synthesis and placement utilisation (the core is 16,493 um2; placement adds
+  about 14% over the synthesised area):
+
+  | Step | Cell area | Utilisation |
+  | --- | --- | --- |
+  | Complete RTL | 16,845 um2 | 121% |
+  | Shared UART prescaler | 15,544 um2 | 111% |
+  | Power-of-two timeouts (current) | 15,151 um2 | 108% |
+  | Experiment: every timeout removed (branch `exp/no-timeouts`) | 13,594 um2 | 97%, detailed placement fails |
+
+  Routing needs roughly 75% or less. Measured with local synthesis, even
+  removing the timeouts, modes 010/011/100, half the FIFO, 400 kHz I2C, two baud
+  rates and loopback only reaches about 76%. Keeping every feature needs a 1x2
+  tile (about 50%).
