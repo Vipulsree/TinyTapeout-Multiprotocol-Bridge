@@ -85,8 +85,8 @@ module tt_um_mpbridge (
                              (baud == 2'b10) ? TO_HOST_UART_2 : TO_HOST_UART_3;
   wire [20:0] to_dev_uart  = (baud == 2'b00) ? TO_DEV_UART_0 : (baud == 2'b01) ? TO_DEV_UART_1 :
                              (baud == 2'b10) ? TO_DEV_UART_2 : TO_DEV_UART_3;
-  wire [20:0] to_host_limit = host_uart ? to_host_uart : TO_BUS;
-  wire [20:0] to_dev_limit  = dev_uart ? to_dev_uart : dev_spi ? TO_SPI_DEV : TO_BUS;
+  wire [20:0] to_host_limit = 21'd0;  // EXPERIMENT: all timeouts off (area measurement)
+  wire [20:0] to_dev_limit  = 21'd0;
 
   // ----------------------------------------------------------- synchronisers
   // bit: 0 UART_RX, 1 SPI_CS_N, 2 SPI_MOSI, 3 SPI_MISO, 4 SPI_SCK, 5 I2C_SCL, 6 I2C_SDA
