@@ -5,9 +5,15 @@
 
 `default_nettype none
 
-// 8N1 UART engine (LSB first, as every UART sends). The receiver and the
-// transmitter have their own bit timers, so RX and TX may overlap (loopback
-// echo, or a UART device that answers during our stop bit).
+// 8N1 UART engine (LSB first, as every UART sends).
+//
+// Timing: one free-running prescaler ticks 7 times per bit, every 31 x m clocks
+// with m = 12 / 6 / 2 / 1 for BAUD_SEL 00 / 01 / 10 / 11. A bit is therefore
+// 2604 / 1302 / 434 / 217 clocks: 9,600.6 / 19,201 / 57,604 / 115,207 baud.
+// The receiver and the transmitter each count ticks with a 3-bit phase counter,
+// so RX and TX may overlap (loopback echo, a device answering during our stop
+// bit). The receiver finds the middle of a bit to within 1/7 of a bit; the
+// first start bit the transmitter sends may be up to 1/7 of a bit short.
 //
 // Roles, from the latched mode (at most one is set):
 //   host : the UART peer is the host. RX bytes go to cmd_ctrl and the response
@@ -54,18 +60,26 @@ module uart_trx (
 
   localparam [1:0] OP_WRITE = 2'd0, OP_WRRD = 2'd2;
 
-  // Clocks per bit - 1 at 25 MHz: 2604 / 1302 / 434 / 217 clocks per bit.
-  wire [11:0] div_m1 = (baud == 2'b00) ? 12'd2603 : (baud == 2'b01) ? 12'd1301 :
-                       (baud == 2'b10) ? 12'd433 : 12'd216;
+  // ---------------------------------------------------------------- prescaler
+  wire [8:0] pre_m1 = (baud == 2'b00) ? 9'd371 : (baud == 2'b01) ? 9'd185 :
+                      (baud == 2'b10) ? 9'd61 : 9'd30;
+  reg  [8:0] pre;
+  wire       tick = (pre == 9'd0);  // 7 per bit
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) pre <= 9'd0;
+    else if (tick) pre <= pre_m1;
+    else pre <= pre - 9'd1;
+  end
 
   // ---------------------------------------------------------------- receiver
-  reg        r_busy;
-  reg [ 3:0] r_bit;  // 0 start, 1-8 data, 9 stop
-  reg [11:0] r_cnt;
-  reg [ 7:0] r_sh;
+  reg       r_busy;
+  reg [3:0] r_bit;  // 0 start, 1-8 data, 9 stop
+  reg [2:0] r_ph;   // ticks to the next sample
+  reg [7:0] r_sh;
 
   wire r_en     = host | dev | loop;
-  wire r_sample = r_busy & (r_cnt == 12'd0);
+  wire r_sample = r_busy & tick & (r_ph == 3'd0);
   wire r_stop   = r_sample & (r_bit == 4'd9);
   wire r_valid  = r_stop & rx;
   assign frame_err = r_stop & ~rx;
@@ -74,52 +88,54 @@ module uart_trx (
     if (!rst_n) begin
       r_busy <= 1'b0;
       r_bit  <= 4'd0;
-      r_cnt  <= 12'd0;
+      r_ph   <= 3'd0;
       r_sh   <= 8'h00;
     end else if (!r_busy) begin
-      if (r_en && rx_fall) begin  // start bit: sample every bit in its middle
+      if (r_en && rx_fall) begin  // start bit: its middle is the 4th tick from here
         r_busy <= 1'b1;
         r_bit  <= 4'd0;
-        r_cnt  <= {1'b0, div_m1[11:1]};
+        r_ph   <= 3'd3;
       end
-    end else if (!r_sample) begin
-      r_cnt <= r_cnt - 12'd1;
-    end else begin
-      r_cnt <= div_m1;
-      r_bit <= r_bit + 4'd1;
-      if (r_bit == 4'd0) begin
-        if (rx) r_busy <= 1'b0;  // glitch, not a start bit
-      end else if (r_bit == 4'd9) begin
-        r_busy <= 1'b0;
+    end else if (tick) begin
+      if (r_ph != 3'd0) begin
+        r_ph <= r_ph - 3'd1;
       end else begin
-        r_sh <= {rx, r_sh[7:1]};
+        r_ph  <= 3'd6;
+        r_bit <= r_bit + 4'd1;
+        if (r_bit == 4'd0) begin
+          if (rx) r_busy <= 1'b0;  // glitch, not a start bit
+        end else if (r_bit == 4'd9) begin
+          r_busy <= 1'b0;
+        end else begin
+          r_sh <= {rx, r_sh[7:1]};
+        end
       end
     end
   end
 
   // ---------------------------------------------------------------- transmitter
-  reg        t_busy;
-  reg [ 3:0] t_bit;   // 0 start, 1-8 data, 9 stop
-  reg [11:0] t_cnt;
-  reg [ 7:0] t_sh;
-  reg        t_pend;  // next byte already loaded during the stop bit
+  reg       t_busy;
+  reg [3:0] t_bit;   // 0 start, 1-8 data, 9 stop
+  reg [2:0] t_ph;    // ticks left in this bit
+  reg [7:0] t_sh;
+  reg       t_pend;  // next byte already loaded during the stop bit
 
   reg       dv_on;   // device transaction running
   reg [2:0] dv_ntx;  // bytes still to transmit
   reg [2:0] dv_nrx;  // reply bytes still expected
 
-  wire t_last  = t_busy & (t_bit == 4'd9);
-  wire t_ready = ~t_busy | (t_last & ~t_pend);
-  wire t_go    = (loop & r_valid) | (host & h_tx_valid) | (dev & dv_on & (dv_ntx != 3'd0));
-  wire t_load  = t_ready & t_go;
-  wire t_tick  = t_busy & (t_cnt == 12'd0);
+  wire t_last   = t_busy & (t_bit == 4'd9);
+  wire t_ready  = ~t_busy | (t_last & ~t_pend);
+  wire t_go     = (loop & r_valid) | (host & h_tx_valid) | (dev & dv_on & (dv_ntx != 3'd0));
+  wire t_load   = t_ready & t_go;
+  wire t_bitend = t_busy & tick & (t_ph == 3'd0);
   wire [7:0] t_data = loop ? r_sh : dev ? d_wr_data : h_tx_data;
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       t_busy <= 1'b0;
       t_bit  <= 4'd0;
-      t_cnt  <= 12'd0;
+      t_ph   <= 3'd0;
       t_sh   <= 8'h00;
       t_pend <= 1'b0;
       tx     <= 1'b1;
@@ -130,14 +146,12 @@ module uart_trx (
         if (t_load) begin
           t_busy <= 1'b1;
           t_bit  <= 4'd0;
-          t_cnt  <= div_m1;
+          t_ph   <= 3'd6;
         end
       end else begin
         if (t_load) t_pend <= 1'b1;
-        if (!t_tick) begin
-          t_cnt <= t_cnt - 12'd1;
-        end else begin
-          t_cnt <= div_m1;
+        if (tick) t_ph <= (t_ph == 3'd0) ? 3'd6 : t_ph - 3'd1;
+        if (t_bitend) begin
           if (t_last) begin  // end of the stop bit: next byte or idle
             t_bit  <= 4'd0;
             t_pend <= 1'b0;

@@ -77,9 +77,12 @@ async def test_bit_time_and_rx_at_every_rate(dut):
         env.rx = []
         await ClockCycles(dut.clk, 2)
         env.response = [0x55]  # alternating bits: every edge is a bit boundary
-        await FallingEdge(dut.tx)
+        # 0x55 LSB first: start 0, then 1 0 1 0 ... so SDA falls at bits 1, 3, 5, 7.
+        # Time bits 1 to 3: the first start bit may be up to 1/7 bit short.
+        await FallingEdge(dut.tx)  # start bit
+        await FallingEdge(dut.tx)  # bit 1
         t0 = get_sim_time(unit="ns")
-        await FallingEdge(dut.tx)  # start bit (0), then bit 0 = 1, bit 1 = 0
+        await FallingEdge(dut.tx)  # bit 3
         bit_ns = (get_sim_time(unit="ns") - t0) / 2
         assert bit_ns == DIV[baud] * 40, f"BAUD_SEL={baud:02b}: bit time {bit_ns} ns"
         assert await env.peer.recv(1) == [0x55]
