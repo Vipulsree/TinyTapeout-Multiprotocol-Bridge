@@ -62,41 +62,31 @@ module tt_um_mpbridge (
   wire off       = (mode == M_OFF);
 
   // ------------------------------------------------------------------ timeouts
-  // Every limit is a 20-bit count of 25 MHz clocks (max 1,048,575 = 41.9 ms);
-  // 0 disables that timeout. Change the values here: UART limits follow the
-  // baud rate, bus limits follow the worst-case transaction time.
-  localparam integer UART_DIV_9600   = 2604;  // clocks per UART bit (also used by uart_trx)
-  localparam integer UART_DIV_19200  = 1302;
-  localparam integer UART_DIV_57600  = 434;
-  localparam integer UART_DIV_115200 = 217;
-  localparam integer CHAR_BITS = 10;          // 8N1 character: start + 8 data + stop
+  // Every limit is a power of two of 25 MHz clocks, so timeout20 tests a single
+  // counter bit instead of comparing 21 (0 disables that timeout). A UART
+  // character (8N1) is 10 x 2604 / 1302 / 434 / 217 clocks at BAUD_SEL 00-11.
+  //   UART host, silence mid-command: 20 / 20 / 15 / 15 characters
+  //   UART device, write-then-read reply window: 10 / 10 / 7.5 / 7.5 characters
+  //   SPI / I2C hosts and the I2C device: 2^20 clocks = 41.9 ms, above the SMBus
+  //     tTIMEOUT (25-35 ms), which also bounds how long a device may stretch SCL
+  //   SPI device: 2^16 clocks = 2.6 ms (a 5-byte transfer at SCK/64 takes 0.1 ms)
+  localparam [20:0] TO_BUS         = 21'd1 << 20;  // 1,048,576
+  localparam [20:0] TO_SPI_DEV     = 21'd1 << 16;  //    65,536
+  localparam [20:0] TO_HOST_UART_0 = 21'd1 << 19;  //   524,288 (9600)
+  localparam [20:0] TO_HOST_UART_1 = 21'd1 << 18;  //   262,144 (19200)
+  localparam [20:0] TO_HOST_UART_2 = 21'd1 << 16;  //    65,536 (57600)
+  localparam [20:0] TO_HOST_UART_3 = 21'd1 << 15;  //    32,768 (115200)
+  localparam [20:0] TO_DEV_UART_0  = 21'd1 << 18;  //   262,144
+  localparam [20:0] TO_DEV_UART_1  = 21'd1 << 17;  //   131,072
+  localparam [20:0] TO_DEV_UART_2  = 21'd1 << 15;  //    32,768
+  localparam [20:0] TO_DEV_UART_3  = 21'd1 << 14;  //    16,384
 
-  // UART host: a half-received command is dropped after this many idle characters
-  // (keep chars x 26,040 below 1,048,576 at 9600 baud, i.e. at most 40).
-  localparam integer TO_HOST_UART_CHARS = 16;
-  // UART device: write-then-read reply window, in idle characters.
-  localparam integer TO_DEV_UART_CHARS = 8;
-  // SPI / I2C hosts and the I2C device: 35 ms, the SMBus tTIMEOUT maximum,
-  // which also bounds how long an I2C device may stretch the clock.
-  localparam [19:0] TO_BUS = 20'd875_000;
-  // SPI device: a 5-byte transfer at SCK = 25 MHz / 64 takes 2,560 clocks.
-  localparam [19:0] TO_SPI_DEV = 20'd65_535;
-
-  localparam [19:0] TO_HOST_UART_0 = UART_DIV_9600   * CHAR_BITS * TO_HOST_UART_CHARS;  // 416,640
-  localparam [19:0] TO_HOST_UART_1 = UART_DIV_19200  * CHAR_BITS * TO_HOST_UART_CHARS;  // 208,320
-  localparam [19:0] TO_HOST_UART_2 = UART_DIV_57600  * CHAR_BITS * TO_HOST_UART_CHARS;  //  69,440
-  localparam [19:0] TO_HOST_UART_3 = UART_DIV_115200 * CHAR_BITS * TO_HOST_UART_CHARS;  //  34,720
-  localparam [19:0] TO_DEV_UART_0  = UART_DIV_9600   * CHAR_BITS * TO_DEV_UART_CHARS;   // 208,320
-  localparam [19:0] TO_DEV_UART_1  = UART_DIV_19200  * CHAR_BITS * TO_DEV_UART_CHARS;   // 104,160
-  localparam [19:0] TO_DEV_UART_2  = UART_DIV_57600  * CHAR_BITS * TO_DEV_UART_CHARS;   //  34,720
-  localparam [19:0] TO_DEV_UART_3  = UART_DIV_115200 * CHAR_BITS * TO_DEV_UART_CHARS;   //  17,360
-
-  wire [19:0] to_host_uart = (baud == 2'b00) ? TO_HOST_UART_0 : (baud == 2'b01) ? TO_HOST_UART_1 :
+  wire [20:0] to_host_uart = (baud == 2'b00) ? TO_HOST_UART_0 : (baud == 2'b01) ? TO_HOST_UART_1 :
                              (baud == 2'b10) ? TO_HOST_UART_2 : TO_HOST_UART_3;
-  wire [19:0] to_dev_uart  = (baud == 2'b00) ? TO_DEV_UART_0 : (baud == 2'b01) ? TO_DEV_UART_1 :
+  wire [20:0] to_dev_uart  = (baud == 2'b00) ? TO_DEV_UART_0 : (baud == 2'b01) ? TO_DEV_UART_1 :
                              (baud == 2'b10) ? TO_DEV_UART_2 : TO_DEV_UART_3;
-  wire [19:0] to_host_limit = host_uart ? to_host_uart : TO_BUS;
-  wire [19:0] to_dev_limit  = dev_uart ? to_dev_uart : dev_spi ? TO_SPI_DEV : TO_BUS;
+  wire [20:0] to_host_limit = host_uart ? to_host_uart : TO_BUS;
+  wire [20:0] to_dev_limit  = dev_uart ? to_dev_uart : dev_spi ? TO_SPI_DEV : TO_BUS;
 
   // ----------------------------------------------------------- synchronisers
   // bit: 0 UART_RX, 1 SPI_CS_N, 2 SPI_MOSI, 3 SPI_MISO, 4 SPI_SCK, 5 I2C_SCL, 6 I2C_SDA

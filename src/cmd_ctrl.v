@@ -16,7 +16,7 @@
 // Status byte: [7] NACK, [6] UART framing error, [5] FIFO overflow,
 //              [4] timeout, [3] reserved (0), [2:0] FIFO count.
 //
-// Timeouts (one shared 20-bit counter, restarted by any handshake):
+// Timeouts (one shared 21-bit counter, restarted by any handshake):
 //  - HEADER / WRITE / read-out: the host went silent -> drop to IDLE, set timeout.
 //  - EXEC: the device transaction ran too long -> pulse d_abort, respond with
 //    timeout set. For a UART device write-then-read the limit is the reply
@@ -60,9 +60,9 @@ module cmd_ctrl (
 
     input wire frame_err,  // UART framing error pulse (either role)
 
-    // Timeout limits in clock cycles (0 disables), chosen per mode in project.v
-    input wire [19:0] to_host_limit,  // silence allowed from the host mid-command or mid-read-out
-    input wire [19:0] to_dev_limit,   // silence allowed from the device during EXEC
+    // Timeout limits in clock cycles: powers of two (0 disables), chosen per mode in project.v
+    input wire [20:0] to_host_limit,  // silence allowed from the host mid-command or mid-read-out
+    input wire [20:0] to_dev_limit,   // silence allowed from the device during EXEC
 
     // Status
     output wire [2:0] state,      // DBG_STATE: 0 IDLE, 1 HEADER, 2 WRITE, 3 EXEC, 4 RESPOND
@@ -135,7 +135,7 @@ module cmd_ctrl (
   wire to_exp;
 
   timeout20 #(
-      .W(20)
+      .W(21)
   ) u_timeout (
       .clk    (clk),
       .rst_n  (rst_n),
