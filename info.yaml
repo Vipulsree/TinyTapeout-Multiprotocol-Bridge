@@ -1,9 +1,9 @@
 # Tiny Tapeout project information
 project:
-  title:        "Six-mode UART/SPI/I2C bridge"      # Project title
+  title:        "Multi-mode UART/SPI/I2C bridge"    # Project title
   author:       "Vipul S and team"                   # TODO: list all four team members
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
-  description:  "One tile that bridges any host/device pair of UART, SPI and I2C, selected by pins"
+  description:  "UART or SPI host to SPI, I2C or UART device bridge (4 modes + loopback), selected by pins"
   language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
   clock_hz:     25000000       # Clock frequency in Hz (or 0 if not applicable)
 

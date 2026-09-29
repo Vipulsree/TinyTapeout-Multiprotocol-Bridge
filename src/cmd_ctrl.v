@@ -5,7 +5,7 @@
 
 `default_nettype none
 
-// Transaction controller for the six-mode bridge.
+// Transaction controller for the multi-mode bridge.
 // Parses the 2-byte header (CMD, ADDR), owns the FIFO and runs
 //   IDLE -> HEADER -> WRITE -> EXEC -> RESPOND
 // for every host/device pairing. The handshake contract with the host and

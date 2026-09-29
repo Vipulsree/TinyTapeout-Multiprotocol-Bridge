@@ -5,7 +5,7 @@
 
 `default_nettype none
 
-// Track A: six-mode UART / SPI / I2C bridge in one Tiny Tapeout tile.
+// Track A: multi-mode UART / SPI / I2C bridge in one Tiny Tapeout tile.
 // Pin map and protocol: docs/info.md and docs/architecture.md.
 //
 // cmd_ctrl runs every transaction; the mode picks which engine is the host
