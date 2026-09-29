@@ -3,16 +3,15 @@
 """Top-level tests for tt_um_mpbridge. The TT CI runs these through test/Makefile,
 at RTL and on the gate-level netlist, so they only use pins and tb wires.
 
-Covers reset state and pin directions, the mode matrix (6 modes x write / read /
-write-then-read / status), mode 110 loopback, error flags (I2C NACK, UART
-framing, FIFO overflow) and the idle-only mode latch. There are no timeouts
-(removed to fit the tile)."""
+Covers reset state and pin directions, the mode matrix (4 bridge modes x write /
+read / write-then-read / status), mode 110 loopback, error flags (I2C NACK, UART
+framing, FIFO overflow) and the idle-only mode latch. Removed to fit the tile:
+timeouts and the I2C-host modes 100 / 101 (they now behave like 111, safe idle)."""
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge, Timer
 from cocotb.utils import get_sim_time
 
-from models.i2c_controller import I2CController
 from models.i2c_target import I2CTarget
 from models.spi import SpiDevice, SpiHost
 from models.uart import UartPeer
@@ -23,14 +22,14 @@ M_UART_SPI, M_UART_I2C, M_SPI_UART, M_SPI_I2C, M_I2C_UART, M_I2C_SPI, M_LOOP, M_
 OP_WRITE, OP_READ, OP_WRRD, OP_STATUS = range(4)
 BAUD_115200 = 0b11 << 4
 I2C_FAST = 1 << 7
-BRIDGE_I2C = 0x2C  # bridge's own I2C target address (I2C_ADDR_LSB = 0)
 SENSOR = 0x48      # I2C device on the bridge's controller port
 NACK, FRAME, OVF = 0x80, 0x40, 0x20
+SAFE_IDLE = (M_I2C_UART, M_I2C_SPI, M_OFF)  # all outputs low, nothing driven
 
 # uio_oe per mode with the SPI slave not selected and the I2C bus idle:
-# SPI master modes drive CS_N, MOSI and SCK (bits 0, 1, 3); everything else is an input.
+# the SPI master mode drives CS_N, MOSI and SCK (bits 0, 1, 3); everything else is an input.
 OE_IDLE = {M_UART_SPI: 0x0B, M_UART_I2C: 0x00, M_SPI_UART: 0x00, M_SPI_I2C: 0x00,
-           M_I2C_UART: 0x00, M_I2C_SPI: 0x0B, M_LOOP: 0x00, M_OFF: 0x00}
+           M_I2C_UART: 0x00, M_I2C_SPI: 0x00, M_LOOP: 0x00, M_OFF: 0x00}
 
 
 def cmd(op, length=1, spi_div=0):
@@ -117,26 +116,7 @@ class SpiHostSide:
         return await self.spi.transfer([0x00] * n_resp)
 
 
-class I2CHostSide:
-    def __init__(self, dut):
-        self.dut = dut
-        self.i2c = I2CController(dut.i2c_scl_pull, dut.i2c_sda_pull, dut.i2c_scl, dut.i2c_sda,
-                                 period_ns=2500)
-        self.addr = BRIDGE_I2C
-
-    async def transact(self, req, n_resp):
-        assert await self.i2c.write(self.addr, req)
-        # Poll: the bridge NACKs its read address until the response is ready.
-        for _ in range(200):
-            out = await self.i2c.read(self.addr, n_resp)
-            if out is not None:
-                return out
-            await Timer(20, unit="us")
-        raise AssertionError("bridge never ACKed the read")
-
-
-HOSTS = {M_UART_SPI: UartHost, M_UART_I2C: UartHost, M_SPI_UART: SpiHostSide, M_SPI_I2C: SpiHostSide,
-         M_I2C_UART: I2CHostSide, M_I2C_SPI: I2CHostSide}
+HOSTS = {M_UART_SPI: UartHost, M_UART_I2C: UartHost, M_SPI_UART: SpiHostSide, M_SPI_I2C: SpiHostSide}
 
 
 def uart_device(dut):
@@ -175,7 +155,7 @@ async def test_pin_directions_per_mode(dut):
     for mode in range(8):
         await set_mode(dut, mode)
         assert int(dut.uio_oe.value) == OE_IDLE[mode], f"mode {mode:03b}: uio_oe={int(dut.uio_oe.value):#04x}"
-        expect_uo = 0x00 if mode == M_OFF else 0x10
+        expect_uo = 0x00 if mode in SAFE_IDLE else 0x10
         assert int(dut.uo_out.value) == expect_uo, f"mode {mode:03b}: uo_out={int(dut.uo_out.value):#04x}"
         assert int(dut.uio_oe.value) & 0x30 == 0  # spare pins never driven
         check_i2c_released(dut)
@@ -224,8 +204,8 @@ async def run_matrix(dut, mode):
     await reset(dut, mode)
     watch = BusWatch(dut)
     host = HOSTS[mode](dut)
-    dev_uart = mode in (M_SPI_UART, M_I2C_UART)
-    dev_spi = mode in (M_UART_SPI, M_I2C_SPI)
+    dev_uart = mode == M_SPI_UART
+    dev_spi = mode == M_UART_SPI
     if dev_uart:
         dev = uart_device(dut)
     elif dev_spi:
@@ -299,13 +279,20 @@ async def test_mode_011_spi_to_i2c(dut):
 
 
 @cocotb.test()
-async def test_mode_100_i2c_to_uart(dut):
-    await run_matrix(dut, M_I2C_UART)
-
-
-@cocotb.test()
-async def test_mode_101_i2c_to_spi(dut):
-    await run_matrix(dut, M_I2C_SPI)
+async def test_removed_modes_100_101_are_safe_idle(dut):
+    await reset(dut, M_UART_SPI)
+    for mode in (M_I2C_UART, M_I2C_SPI):
+        await set_mode(dut, mode)
+        assert int(dut.uo_out.value) == 0 and int(dut.uio_oe.value) == 0, f"mode {mode:03b}"
+        # I2C and UART traffic is ignored: nothing is driven, nothing answers
+        dut.i2c_sda_pull.value = 1
+        dut.uart_rx.value = 0
+        await ClockCycles(dut.clk, 20)
+        dut.i2c_sda_pull.value = 0
+        dut.uart_rx.value = 1
+        await ClockCycles(dut.clk, 20)
+        assert int(dut.uo_out.value) == 0 and int(dut.uio_oe.value) == 0
+        check_i2c_released(dut)
 
 
 # ---------------------------------------------------------------------- details and errors
@@ -340,21 +327,6 @@ async def test_i2c_nack_sets_status_and_err(dut):
     # The next good command clears it
     assert await host.transact([cmd(OP_WRITE, 1), SENSOR, 0x00], 1) == [0x00]
     assert int(dut.err.value) == 0
-
-
-@cocotb.test()
-async def test_i2c_target_address_and_busy_nack(dut):
-    await reset(dut, M_I2C_SPI)
-    host = I2CHostSide(dut)
-    spi_device(dut)
-    # Wrong address (0x2D while I2C_ADDR_LSB = 0) and a read with no response pending: NACK
-    assert not await host.i2c.write(BRIDGE_I2C + 1, [cmd(OP_STATUS), 0])
-    assert await host.i2c.read(BRIDGE_I2C, 1) is None
-    # I2C_ADDR_LSB = 1 moves the bridge to 0x2D
-    await set_mode(dut, M_I2C_SPI, BAUD_115200 | I2C_FAST | 0x40)
-    host.addr = BRIDGE_I2C + 1
-    assert await host.transact([cmd(OP_STATUS), 0], 1) == [0x00]
-    assert not await host.i2c.write(BRIDGE_I2C, [cmd(OP_STATUS), 0])
 
 
 @cocotb.test()

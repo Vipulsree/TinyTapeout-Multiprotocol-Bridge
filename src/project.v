@@ -10,9 +10,10 @@
 //
 // cmd_ctrl runs every transaction; the mode picks which engine is the host
 // side and which is the device side. Each engine ignores its inputs and
-// outputs zero pulses when its role is not selected.
+// outputs zero pulses when its role is not selected. Modes 100 / 101 (I2C host)
+// were removed to fit the 1x1 tile and now act like 111: safe idle.
 module tt_um_mpbridge (
-    input  wire [7:0] ui_in,    // MODE[2:0], UART_RX, BAUD_SEL[1:0], I2C_ADDR_LSB, I2C_FAST
+    input  wire [7:0] ui_in,    // MODE[2:0], UART_RX, BAUD_SEL[1:0], (unused), I2C_FAST
     output wire [7:0] uo_out,   // DBG_STATE[3:0], UART_TX, IRQ, BUSY, ERR
     input  wire [7:0] uio_in,   // SPI CS_N/MOSI/MISO/SCK, I2C SCL/SDA
     output wire [7:0] uio_out,
@@ -30,7 +31,6 @@ module tt_um_mpbridge (
   wire       ctrl_idle, uart_idle, spi_idle, i2c_idle;
   reg  [2:0] mode;
   reg  [1:0] baud;      // BAUD_SEL: 00 9600, 01 19200, 10 57600, 11 115200
-  reg        i2c_lsb;   // I2C target address LSB
   reg        i2c_fast;  // I2C controller: 0 = 100 kHz, 1 = 400 kHz
 
   // The configuration pins are latched only while the controller and every
@@ -42,24 +42,21 @@ module tt_um_mpbridge (
     if (!rst_n) begin
       mode     <= M_OFF;
       baud     <= 2'b11;
-      i2c_lsb  <= 1'b0;
       i2c_fast <= 1'b0;
     end else if (all_idle) begin
       mode     <= ui_in[2:0];
       baud     <= ui_in[5:4];
-      i2c_lsb  <= ui_in[6];
       i2c_fast <= ui_in[7];
     end
   end
 
   wire host_uart = (mode == M_UART_SPI) | (mode == M_UART_I2C) | (mode == M_LOOP);
   wire host_spi  = (mode == M_SPI_UART) | (mode == M_SPI_I2C);
-  wire host_i2c  = (mode == M_I2C_UART) | (mode == M_I2C_SPI);
-  wire dev_spi   = (mode == M_UART_SPI) | (mode == M_I2C_SPI);
+  wire dev_spi   = (mode == M_UART_SPI);
   wire dev_i2c   = (mode == M_UART_I2C) | (mode == M_SPI_I2C);
-  wire dev_uart  = (mode == M_SPI_UART) | (mode == M_I2C_UART);
+  wire dev_uart  = (mode == M_SPI_UART);
   wire loop      = (mode == M_LOOP);
-  wire off       = (mode == M_OFF);
+  wire off       = (mode == M_OFF) | (mode == M_I2C_UART) | (mode == M_I2C_SPI);
 
   // ----------------------------------------------------------- synchronisers
   // bit: 0 UART_RX, 1 SPI_CS_N, 2 SPI_MOSI, 3 SPI_MISO, 4 SPI_SCK, 5 I2C_SCL, 6 I2C_SDA
@@ -185,57 +182,43 @@ module tt_um_mpbridge (
   );
 
   // ----------------------------------------------------------- I2C engine
+  // Controller only (device side of modes 001 / 011).
   wire       i2c_scl_low, i2c_sda_low;
   wire [7:0] i_rx_data;
-  wire       i_h_rx_valid, i_h_frame_start, i_h_frame_rd, i_h_frame_end, i_h_tx_take;
   wire       i_d_wr_pop, i_d_rd_push, i_d_done, i_d_nack;
 
   i2c_engine u_i2c (
-      .clk          (clk),
-      .rst_n        (rst_n),
-      .ctl          (dev_i2c),
-      .tgt          (host_i2c),
-      .addr_lsb     (i2c_lsb),
-      .scl          (pin_q[5]),
-      .sda          (pin_q[6]),
-      .scl_rise     (pin_rise[5]),
-      .scl_fall     (pin_fall[5]),
-      .sda_rise     (pin_rise[6]),
-      .sda_fall     (pin_fall[6]),
-      .scl_low      (i2c_scl_low),
-      .sda_low      (i2c_sda_low),
-      .tick_en      (i2c_tick_en),
-      .tick         (div_tick),
-      .rx_data      (i_rx_data),
-      .h_rx_valid   (i_h_rx_valid),
-      .h_frame_start(i_h_frame_start),
-      .h_frame_rd   (i_h_frame_rd),
-      .h_frame_end  (i_h_frame_end),
-      .h_tx_data    (h_tx_data),
-      .h_tx_take    (i_h_tx_take),
-      .can_read     (can_read),
-      .can_write    (can_write),
-      .d_start      (d_start & dev_i2c),
-      .d_op         (d_op),
-      .d_len        (d_len),
-      .d_addr       (d_addr),
-      .d_abort      (d_abort),
-      .d_wr_data    (d_wr_data),
-      .d_wr_pop     (i_d_wr_pop),
-      .d_rd_push    (i_d_rd_push),
-      .d_done       (i_d_done),
-      .d_nack       (i_d_nack),
-      .idle         (i2c_idle)
+      .clk      (clk),
+      .rst_n    (rst_n),
+      .ctl      (dev_i2c),
+      .scl      (pin_q[5]),
+      .sda      (pin_q[6]),
+      .scl_low  (i2c_scl_low),
+      .sda_low  (i2c_sda_low),
+      .tick_en  (i2c_tick_en),
+      .tick     (div_tick),
+      .d_start  (d_start & dev_i2c),
+      .d_op     (d_op),
+      .d_len    (d_len),
+      .d_addr   (d_addr),
+      .d_abort  (d_abort),
+      .d_wr_data(d_wr_data),
+      .d_wr_pop (i_d_wr_pop),
+      .rx_data  (i_rx_data),
+      .d_rd_push(i_d_rd_push),
+      .d_done   (i_d_done),
+      .d_nack   (i_d_nack),
+      .idle     (i2c_idle)
   );
 
   // ----------------------------------------------------------- engine -> controller
   // Pulses are already gated by role inside each engine, so they can be ORed.
-  wire [7:0] h_rx_data     = host_spi ? s_rx_data : host_i2c ? i_rx_data : u_rx_data;
-  wire       h_rx_valid    = u_h_rx_valid | s_h_rx_valid | i_h_rx_valid;
-  wire       h_frame_start = s_h_frame_start | i_h_frame_start;
-  wire       h_frame_rd    = host_spi | i_h_frame_rd;  // SPI frames are always read-out frames
-  wire       h_frame_end   = s_h_frame_end | i_h_frame_end;
-  wire       h_tx_take     = u_h_tx_take | s_h_tx_take | i_h_tx_take;
+  wire [7:0] h_rx_data     = host_spi ? s_rx_data : u_rx_data;
+  wire       h_rx_valid    = u_h_rx_valid | s_h_rx_valid;
+  wire       h_frame_start = s_h_frame_start;
+  wire       h_frame_rd    = host_spi;  // SPI frames are always read-out frames
+  wire       h_frame_end   = s_h_frame_end;
+  wire       h_tx_take     = u_h_tx_take | s_h_tx_take;
   wire [7:0] d_rd_data     = dev_spi ? s_rx_data : dev_i2c ? i_rx_data : u_rx_data;
   wire       d_rd_push     = u_d_rd_push | s_d_rd_push | i_d_rd_push;
   wire       d_wr_pop      = u_d_wr_pop | s_d_wr_pop | i_d_wr_pop;
@@ -281,7 +264,7 @@ module tt_um_mpbridge (
   );
 
   // ----------------------------------------------------------- pins
-  wire i2c_on       = dev_i2c | host_i2c;
+  wire i2c_on       = dev_i2c;
   wire spi_selected = host_spi & ~spi_cs_n_in;  // slave drives MISO only while selected
 
   assign uo_out = off ? 8'h00 : {err, busy, irq, uart_tx, 1'b0, state};
@@ -291,8 +274,10 @@ module tt_um_mpbridge (
   assign uio_oe  = off ? 8'h00 : {i2c_on & i2c_sda_low, i2c_on & i2c_scl_low, 2'b00,
                                   dev_spi, spi_selected, dev_spi, dev_spi};
 
-  // Not needed: ena, the raw SPI pins (the engines use the synchronised
-  // copies), and edges nothing looks at.
-  wire _unused = &{ena, pin_q[4], pin_rise[3:2], pin_rise[0], pin_fall[3:2], d_wr_avail, 1'b0};
+  // Not needed: ena, ui_in[6] (was I2C_ADDR_LSB), the raw SPI pins (the engines
+  // use the synchronised copies), edges nothing looks at, and the I2C-target
+  // handshakes of cmd_ctrl.
+  wire _unused = &{ena, ui_in[6], pin_q[4], pin_rise[6:5], pin_rise[3:2], pin_rise[0], pin_fall[6:5],
+                   pin_fall[3:2], d_wr_avail, can_read, can_write, 1'b0};
 
 endmodule

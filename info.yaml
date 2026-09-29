@@ -36,7 +36,7 @@ pinout:
   ui[3]: "UART_RX"
   ui[4]: "BAUD_SEL[0]"
   ui[5]: "BAUD_SEL[1]"
-  ui[6]: "I2C_ADDR_LSB"
+  ui[6]: ""
   ui[7]: "I2C_FAST"
 
   # Outputs

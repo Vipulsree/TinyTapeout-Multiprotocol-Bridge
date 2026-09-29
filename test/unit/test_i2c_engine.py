@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for i2c_engine: the controller against the Python I2C target model,
-the target against the bit-banged I2C controller model. The test plays cmd_ctrl
-(a list stands in for the FIFO). Inputs change on falling clock edges."""
+"""Unit tests for i2c_engine (controller only; the target role was removed to fit
+the tile) against the Python I2C target model. The test plays cmd_ctrl (a list
+stands in for the FIFO). Inputs change just after rising edges."""
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge, Timer
 from cocotb.utils import get_sim_time
 
-from models.i2c_controller import I2CController
 from models.i2c_target import I2CTarget
 
 OP_WRITE, OP_READ, OP_WRRD = range(3)
@@ -17,21 +16,17 @@ SENSOR = 0x48
 class Env:
     def __init__(self, dut):
         self.dut = dut
-        self.fifo = []      # bytes for the controller to write
-        self.pushed = []    # bytes the controller read
-        self.done = []      # (done, nack) pulses
-        self.rx = []        # target: bytes written by the external controller
-        self.frames = []    # target: ("S", rd) / ("P",) events
-        self.response = []  # target: bytes to return on reads
-        self.takes = 0
+        self.fifo = []    # bytes for the controller to write
+        self.pushed = []  # bytes the controller read
+        self.done = []    # (done, nack) pulses
 
-    async def setup(self, ctl=1, tgt=0, fast=1, addr_lsb=0):
+    async def setup(self, fast=1):
         d = self.dut
         cocotb.start_soon(Clock(d.clk, 40, unit="ns").start())
-        for name in ("d_start", "d_abort", "d_op", "d_len", "d_addr", "d_wr_data", "h_tx_data",
-                     "can_read", "can_write", "ext_scl_pull", "ext_sda_pull"):
+        for name in ("d_start", "d_abort", "d_op", "d_len", "d_addr", "d_wr_data", "ext_scl_pull",
+                     "ext_sda_pull"):
             getattr(d, name).value = 0
-        d.ctl.value, d.tgt.value, d.fast.value, d.addr_lsb.value = ctl, tgt, fast, addr_lsb
+        d.ctl.value, d.fast.value = 1, fast
         d.rst_n.value = 0
         await ClockCycles(d.clk, 3)
         await FallingEdge(d.clk)
@@ -42,11 +37,10 @@ class Env:
     async def _engine_io(self):
         d = self.dut
         while True:
-            # FIFO heads change just after the rising edge, like the FIFO; pulses
+            # FIFO head changes just after the rising edge, like the FIFO; pulses
             # are sampled mid-cycle and take effect at the next rising edge.
             await RisingEdge(d.clk)
             d.d_wr_data.value = self.fifo[0] if self.fifo else 0
-            d.h_tx_data.value = self.response[0] if self.response else 0
             await FallingEdge(d.clk)
             if int(d.d_wr_pop.value):
                 self.fifo.pop(0)
@@ -54,15 +48,6 @@ class Env:
                 self.pushed.append(int(d.rx_data.value))
             if int(d.d_done.value):
                 self.done.append((1, int(d.d_nack.value)))
-            if int(d.h_rx_valid.value):
-                self.rx.append(int(d.rx_data.value))
-            if int(d.h_frame_start.value):
-                self.frames.append(("S", int(d.h_frame_rd.value)))
-            if int(d.h_frame_end.value):
-                self.frames.append(("P",))
-            if int(d.h_tx_take.value):
-                self.takes += 1
-                self.response = self.response[1:]
 
     async def run(self, op, length, addr=SENSOR, data=(), timeout_us=2000):
         d = self.dut
@@ -88,7 +73,6 @@ def sensor(dut):
     return tgt
 
 
-# ---------------------------------------------------------------- controller
 @cocotb.test()
 async def test_ctl_write(dut):
     env = await Env(dut).setup()
@@ -177,46 +161,3 @@ async def test_ctl_abort_releases_bus(dut):
     assert int(dut.idle.value) == 1 and env.done == []  # no d_done after an abort
     assert int(dut.scl.value) == 1 and int(dut.sda.value) == 1
     task.cancel()
-
-
-# ---------------------------------------------------------------- target
-def controller(dut, period_ns=2500):
-    return I2CController(dut.ext_scl_pull, dut.ext_sda_pull, dut.scl, dut.sda, period_ns)
-
-
-@cocotb.test()
-async def test_tgt_write_and_read(dut):
-    env = await Env(dut).setup(ctl=0, tgt=1)
-    dut.can_write.value = 1
-    ctl = controller(dut)
-    assert await ctl.write(0x2C, [0x81, 0x48, 0x00])
-    assert env.rx == [0x81, 0x48, 0x00] and env.frames == [("S", 0), ("P",)]
-    dut.can_read.value = 1
-    env.response = [0xDE, 0xAD, 0xBE]
-    assert await ctl.read(0x2C, 3) == [0xDE, 0xAD, 0xBE]
-    assert env.takes == 3 and env.frames[-2:] == [("S", 1), ("P",)]
-
-
-@cocotb.test()
-async def test_tgt_nacks_when_not_ready_or_not_addressed(dut):
-    env = await Env(dut).setup(ctl=0, tgt=1, addr_lsb=1)
-    ctl = controller(dut)
-    assert not await ctl.write(0x2D, [0x00])        # can_write = 0
-    assert await ctl.read(0x2D, 1) is None          # can_read = 0
-    dut.can_write.value = 1
-    dut.can_read.value = 1
-    assert not await ctl.write(0x2C, [0x00])        # other address
-    assert await ctl.write(0x2D, [0x55])
-    assert env.rx == [0x55] and env.takes == 0
-
-
-@cocotb.test()
-async def test_tgt_write_then_read_with_repeated_start(dut):
-    env = await Env(dut).setup(ctl=0, tgt=1)
-    dut.can_write.value = 1
-    dut.can_read.value = 1
-    env.response = [0x12, 0x34]
-    ctl = controller(dut)
-    assert await ctl.write_read(0x2C, [0xC0, 0x00], 2) == [0x12, 0x34]
-    assert env.rx == [0xC0, 0x00]
-    assert env.frames == [("S", 0), ("S", 1), ("P",)]
