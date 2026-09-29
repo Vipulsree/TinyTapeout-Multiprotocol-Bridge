@@ -21,7 +21,6 @@ project:
     - "sync2_edge.v"
     - "cmd_ctrl.v"
     - "fifo4x8.v"
-    - "timeout20.v"
     - "clkdiv.v"
     - "uart_trx.v"
     - "spi_ms.v"

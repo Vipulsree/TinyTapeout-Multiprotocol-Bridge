@@ -61,33 +61,6 @@ module tt_um_mpbridge (
   wire loop      = (mode == M_LOOP);
   wire off       = (mode == M_OFF);
 
-  // ------------------------------------------------------------------ timeouts
-  // Every limit is a power of two of 25 MHz clocks, so timeout20 tests a single
-  // counter bit instead of comparing 21 (0 disables that timeout). A UART
-  // character (8N1) is 10 x 2604 / 1302 / 434 / 217 clocks at BAUD_SEL 00-11.
-  //   UART host, silence mid-command: 20 / 20 / 15 / 15 characters
-  //   UART device, write-then-read reply window: 10 / 10 / 7.5 / 7.5 characters
-  //   SPI / I2C hosts and the I2C device: 2^20 clocks = 41.9 ms, above the SMBus
-  //     tTIMEOUT (25-35 ms), which also bounds how long a device may stretch SCL
-  //   SPI device: 2^16 clocks = 2.6 ms (a 5-byte transfer at SCK/64 takes 0.1 ms)
-  localparam [20:0] TO_BUS         = 21'd1 << 20;  // 1,048,576
-  localparam [20:0] TO_SPI_DEV     = 21'd1 << 16;  //    65,536
-  localparam [20:0] TO_HOST_UART_0 = 21'd1 << 19;  //   524,288 (9600)
-  localparam [20:0] TO_HOST_UART_1 = 21'd1 << 18;  //   262,144 (19200)
-  localparam [20:0] TO_HOST_UART_2 = 21'd1 << 16;  //    65,536 (57600)
-  localparam [20:0] TO_HOST_UART_3 = 21'd1 << 15;  //    32,768 (115200)
-  localparam [20:0] TO_DEV_UART_0  = 21'd1 << 18;  //   262,144
-  localparam [20:0] TO_DEV_UART_1  = 21'd1 << 17;  //   131,072
-  localparam [20:0] TO_DEV_UART_2  = 21'd1 << 15;  //    32,768
-  localparam [20:0] TO_DEV_UART_3  = 21'd1 << 14;  //    16,384
-
-  wire [20:0] to_host_uart = (baud == 2'b00) ? TO_HOST_UART_0 : (baud == 2'b01) ? TO_HOST_UART_1 :
-                             (baud == 2'b10) ? TO_HOST_UART_2 : TO_HOST_UART_3;
-  wire [20:0] to_dev_uart  = (baud == 2'b00) ? TO_DEV_UART_0 : (baud == 2'b01) ? TO_DEV_UART_1 :
-                             (baud == 2'b10) ? TO_DEV_UART_2 : TO_DEV_UART_3;
-  wire [20:0] to_host_limit = host_uart ? to_host_uart : TO_BUS;
-  wire [20:0] to_dev_limit  = dev_uart ? to_dev_uart : dev_spi ? TO_SPI_DEV : TO_BUS;
-
   // ----------------------------------------------------------- synchronisers
   // bit: 0 UART_RX, 1 SPI_CS_N, 2 SPI_MOSI, 3 SPI_MISO, 4 SPI_SCK, 5 I2C_SCL, 6 I2C_SDA
   wire [6:0] pin_raw = {uio_in[7], uio_in[6], uio_in[3], uio_in[2], uio_in[1], uio_in[0], ui_in[3]};
@@ -114,7 +87,9 @@ module tt_um_mpbridge (
   wire [1:0] d_op, d_spi_div;
   wire [2:0] d_len, state;
   wire [6:0] d_addr;
-  wire       d_abort;
+  // No timeouts (removed to fit the tile): nothing ever aborts a device
+  // transaction, so the engines' abort inputs are tied off.
+  wire       d_abort = 1'b0;
   wire       can_read, can_write, irq, busy, err;
 
   // ----------------------------------------------------------- UART engine
@@ -290,15 +265,12 @@ module tt_um_mpbridge (
       .d_spi_div    (d_spi_div),
       .d_done       (d_done),
       .d_nack       (d_nack),
-      .d_abort      (d_abort),
       .d_wr_data    (d_wr_data),
       .d_wr_avail   (d_wr_avail),
       .d_wr_pop     (d_wr_pop),
       .d_rd_data    (d_rd_data),
       .d_rd_push    (d_rd_push),
       .frame_err    (frame_err),
-      .to_host_limit(to_host_limit),
-      .to_dev_limit (to_dev_limit),
       .state        (state),
       .idle         (ctrl_idle),
       .can_read     (can_read),

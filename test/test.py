@@ -5,9 +5,8 @@ at RTL and on the gate-level netlist, so they only use pins and tb wires.
 
 Covers reset state and pin directions, the mode matrix (6 modes x write / read /
 write-then-read / status), mode 110 loopback, error flags (I2C NACK, UART
-framing, FIFO overflow), timeouts and the idle-only mode latch."""
-import os
-
+framing, FIFO overflow) and the idle-only mode latch. There are no timeouts
+(removed to fit the tile)."""
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge, Timer
@@ -19,7 +18,6 @@ from models.spi import SpiDevice, SpiHost
 from models.uart import UartPeer
 
 CLK_NS = 40  # 25 MHz
-GATES = os.environ.get("GATES") == "yes"
 
 M_UART_SPI, M_UART_I2C, M_SPI_UART, M_SPI_I2C, M_I2C_UART, M_I2C_SPI, M_LOOP, M_OFF = range(8)
 OP_WRITE, OP_READ, OP_WRRD, OP_STATUS = range(4)
@@ -27,7 +25,7 @@ BAUD_115200 = 0b11 << 4
 I2C_FAST = 1 << 7
 BRIDGE_I2C = 0x2C  # bridge's own I2C target address (I2C_ADDR_LSB = 0)
 SENSOR = 0x48      # I2C device on the bridge's controller port
-NACK, FRAME, OVF, TIMEOUT = 0x80, 0x40, 0x20, 0x10
+NACK, FRAME, OVF = 0x80, 0x40, 0x20
 
 # uio_oe per mode with the SPI slave not selected and the I2C bus idle:
 # SPI master modes drive CS_N, MOSI and SCK (bits 0, 1, 3); everything else is an input.
@@ -377,29 +375,6 @@ async def test_uart_framing_error_and_overflow(dut):
 
 
 @cocotb.test()
-async def test_uart_device_reply_window(dut):
-    await reset(dut, M_SPI_UART)
-    host = SpiHostSide(dut)
-    dev = UartPeer(dut.uart_rx, dut.uart_tx, 115200)
-    dev.reply = lambda b: [0x5A]  # answers one byte where three were asked for
-    # The 8-character reply window closes the transaction without an error
-    assert await host.transact([cmd(OP_WRRD, 3), 0, 0x42], 3) == [0x5A, 0x00, 0x00]
-    assert await host.transact([cmd(OP_STATUS), 0], 1) == [0x00]
-
-
-@cocotb.test()
-async def test_uart_host_timeout_drops_partial_command(dut):
-    await reset(dut, M_UART_I2C)
-    host = UartHost(dut)
-    i2c_device(dut)
-    await host.peer.send([cmd(OP_WRITE, 2), SENSOR, 0x05])  # one payload byte short
-    await Timer(20 * 87, unit="us")  # more than 16 idle characters at 115200 baud
-    assert int(dut.uo_out.value) & 0x0F == 0  # back to IDLE
-    assert int(dut.err.value) == 1
-    assert await host.transact([cmd(OP_STATUS), 0], 1) == [TIMEOUT]
-
-
-@cocotb.test()
 async def test_mode_pins_ignored_until_idle(dut):
     await reset(dut, M_UART_I2C)
     host = UartHost(dut)
@@ -411,19 +386,3 @@ async def test_mode_pins_ignored_until_idle(dut):
     assert await task == [0x19, 0x80]
     await Timer(10, unit="us")  # rest of the last stop bit
     assert int(dut.uio_oe.value) == OE_IDLE[M_UART_SPI]  # now latched
-
-
-@cocotb.test(skip=GATES)
-async def test_i2c_clock_stretch_timeout(dut):
-    """A device holding SCL low past 35 ms is abandoned (RTL only: 875,000 clocks)."""
-    await reset(dut, M_UART_I2C)
-    host = UartHost(dut)
-    i2c_device(dut)
-    task = cocotb.start_soon(host.transact([cmd(OP_WRITE, 1), SENSOR, 0x00], 1, timeout_bits=5000))
-    await RisingEdge(dut.busy)
-    await FallingEdge(dut.i2c_scl)
-    dut.i2c_scl_pull.value = 1  # stretch forever
-    assert await task == [TIMEOUT | 1]  # the payload byte was never sent
-    dut.i2c_scl_pull.value = 0
-    await ClockCycles(dut.clk, 200)
-    check_i2c_released(dut)

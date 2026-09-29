@@ -14,13 +14,12 @@
 // CMD[7:6] op: 00 write, 01 read, 10 write 1 byte then read, 11 status
 // CMD[3:2] SPI_DIV (SPI device only), CMD[1:0] LEN-1, ADDR[6:0] I2C address.
 // Status byte: [7] NACK, [6] UART framing error, [5] FIFO overflow,
-//              [4] timeout, [3] reserved (0), [2:0] FIFO count.
+//              [4:3] reserved (0), [2:0] FIFO count.
 //
-// Timeouts (one shared 21-bit counter, restarted by any handshake):
-//  - HEADER / WRITE / read-out: the host went silent -> drop to IDLE, set timeout.
-//  - EXEC: the device transaction ran too long -> pulse d_abort, respond with
-//    timeout set. For a UART device write-then-read the limit is the reply
-//    window instead: expiry ends the reply normally, without an error.
+// There are no timeouts (removed to fit the tile, docs/architecture.md): a
+// device transaction waits for d_done, a UART device write-then-read waits for
+// LEN reply bytes, and a partial command waits for the rest of its bytes (SPI
+// and I2C hosts drop it by ending the frame).
 module cmd_ctrl (
     input wire clk,
     input wire rst_n,
@@ -49,7 +48,6 @@ module cmd_ctrl (
     output reg  [1:0] d_spi_div,
     input  wire       d_done,     // one-cycle pulse: device transaction finished
     input  wire       d_nack,     // one-cycle pulse: I2C device did not acknowledge
-    output reg        d_abort,    // one-cycle pulse: stop the transaction and release the bus
 
     // FIFO access for the device engine
     output wire [7:0] d_wr_data,   // next write byte (FIFO head)
@@ -59,10 +57,6 @@ module cmd_ctrl (
     input  wire       d_rd_push,   // read byte, or a buffered UART RX byte
 
     input wire frame_err,  // UART framing error pulse (either role)
-
-    // Timeout limits in clock cycles: powers of two (0 disables), chosen per mode in project.v
-    input wire [20:0] to_host_limit,  // silence allowed from the host mid-command or mid-read-out
-    input wire [20:0] to_dev_limit,   // silence allowed from the device during EXEC
 
     // Status
     output wire [2:0] state,      // DBG_STATE: 0 IDLE, 1 HEADER, 2 WRITE, 3 EXEC, 4 RESPOND
@@ -82,7 +76,7 @@ module cmd_ctrl (
   reg       exec_first;  // first cycle in EXEC
   reg       rsp_status;  // response is the status byte rather than FIFO data
   reg       reading;     // framed host has opened its read-out frame
-  reg f_nack, f_frame, f_ovf, f_timeout;
+  reg f_nack, f_frame, f_ovf;
 
   // ---------------------------------------------------------------- FIFO
   wire       fifo_full, fifo_empty;
@@ -120,30 +114,12 @@ module cmd_ctrl (
       .count(fifo_count)
   );
 
-  wire [7:0] status_byte = {f_nack, f_frame, f_ovf, f_timeout, 1'b0, fifo_count};
+  wire [7:0] status_byte = {f_nack, f_frame, f_ovf, 2'b00, fifo_count};
 
   // Decoded from the stored CMD byte
   wire [2:0] pay_len = (d_op == OP_WRITE) ? d_len : (d_op == OP_WRRD) ? 3'd1 : 3'd0;
   wire skip_dev = (d_op == OP_STATUS) | (dev_uart & (d_op == OP_READ));
   wire rsp_is_status = (d_op == OP_WRITE) | (d_op == OP_STATUS);
-  wire reply_window = dev_uart & (d_op == OP_WRRD);  // EXEC expiry is a normal end
-
-  // ---------------------------------------------------------------- timeout
-  wire to_run = (st == S_HEADER) | (st == S_WRITE) | (st == S_EXEC) |
-                ((st == S_RESPOND) & (host_uart | reading));
-  wire to_kick = h_rx_valid | h_tx_take | h_frame_start | d_wr_pop | d_rd_push | d_done | exec_first;
-  wire to_exp;
-
-  timeout20 #(
-      .W(21)
-  ) u_timeout (
-      .clk    (clk),
-      .rst_n  (rst_n),
-      .run    (to_run),
-      .kick   (to_kick),
-      .limit  ((st == S_EXEC) ? to_dev_limit : to_host_limit),
-      .expired(to_exp)
-  );
 
   // ---------------------------------------------------------------- command fields
   // Data only, so no reset: engines read them only after d_start. (d_op keeps
@@ -153,7 +129,7 @@ module cmd_ctrl (
       d_spi_div <= h_rx_data[3:2];
       d_len     <= {1'b0, h_rx_data[1:0]} + 3'd1;
     end
-    if (hdr_done) d_addr <= h_rx_data[6:0];  // a timeout never coincides with a byte
+    if (hdr_done) d_addr <= h_rx_data[6:0];
   end
 
   // ---------------------------------------------------------------- FSM
@@ -165,15 +141,12 @@ module cmd_ctrl (
       rsp_status <= 1'b0;
       reading    <= 1'b0;
       d_start    <= 1'b0;
-      d_abort    <= 1'b0;
       d_op       <= OP_WRITE;
       f_nack     <= 1'b0;
       f_frame    <= 1'b0;
       f_ovf      <= 1'b0;
-      f_timeout  <= 1'b0;
     end else begin
       d_start <= 1'b0;
-      d_abort <= 1'b0;
 
       case (st)
         S_IDLE:
@@ -184,15 +157,11 @@ module cmd_ctrl (
 
         S_HEADER:
         if (h_frame_end) st <= S_IDLE;  // frame ended before the header was complete
-        else if (to_exp) begin          // host went silent mid-header
-          st        <= S_IDLE;
-          f_timeout <= 1'b1;
-        end else if (h_rx_valid) begin
+        else if (h_rx_valid) begin
           if (d_op != OP_STATUS) begin
-            f_nack    <= 1'b0;
-            f_frame   <= 1'b0;
-            f_ovf     <= 1'b0;
-            f_timeout <= 1'b0;
+            f_nack  <= 1'b0;
+            f_frame <= 1'b0;
+            f_ovf   <= 1'b0;
           end
           if (pay_len == 3'd0) begin
             st         <= S_EXEC;
@@ -205,10 +174,7 @@ module cmd_ctrl (
 
         S_WRITE:
         if (h_frame_end) st <= S_IDLE;  // frame ended before the payload was complete
-        else if (to_exp) begin          // host went silent mid-payload
-          st        <= S_IDLE;
-          f_timeout <= 1'b1;
-        end else if (h_rx_valid) begin
+        else if (h_rx_valid) begin
           rem <= rem - 3'd1;
           if (rem == 3'd1) begin
             st         <= S_EXEC;
@@ -227,24 +193,17 @@ module cmd_ctrl (
             end else begin
               d_start <= 1'b1;
             end
-          end else if (d_done || to_exp) begin
+          end else if (d_done) begin
             st         <= S_RESPOND;
             rsp_status <= rsp_is_status;
             rem        <= rsp_is_status ? 3'd1 : d_len;
             reading    <= 1'b0;
-            if (to_exp) begin
-              d_abort <= 1'b1;
-              if (!reply_window) f_timeout <= 1'b1;
-            end
           end
         end
 
         S_RESPOND: begin
           if (rsp_take && rem != 3'd0) rem <= rem - 3'd1;
-          if (to_exp) begin  // host stopped reading (or the UART host engine stalled)
-            st        <= S_IDLE;
-            f_timeout <= 1'b1;
-          end else if (host_uart) begin
+          if (host_uart) begin
             if (rem == 3'd0) st <= S_IDLE;
           end else if (h_frame_start) begin
             if (h_frame_rd) reading <= 1'b1;
@@ -271,7 +230,7 @@ module cmd_ctrl (
   assign can_write  = (st != S_EXEC);
   assign irq        = (st == S_RESPOND) | (dev_uart & (st == S_IDLE) & ~fifo_empty);
   assign busy       = (st == S_EXEC) | (host_uart & (st == S_RESPOND));
-  assign err        = f_nack | f_frame | f_ovf | f_timeout;
+  assign err        = f_nack | f_frame | f_ovf;
   assign h_tx_valid = (st == S_RESPOND) & (rem != 3'd0);
   // One byte bus serves both engines: the FIFO head while a device transaction
   // runs (only the device engine reads it then), the response otherwise (only

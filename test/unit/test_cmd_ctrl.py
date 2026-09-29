@@ -10,7 +10,6 @@ OP_WRITE, OP_READ, OP_WRRD, OP_STATUS = range(4)
 
 INPUTS = ("h_rx_data", "h_rx_valid", "h_frame_start", "h_frame_rd", "h_frame_end", "h_tx_take",
           "d_done", "d_nack", "d_wr_pop", "d_rd_data", "d_rd_push", "frame_err")
-TIMEOUT = 0x10  # status byte bit 4
 
 
 def cmd(op, length, spi_div=0):
@@ -26,30 +25,21 @@ class Env:
         self.hang = False     # fake device never pulses d_done
         self.writes = []      # bytes the fake device popped
         self.starts = []      # (op, len, addr, spi_div) per d_start
-        self.aborts = 0       # d_abort pulses seen
 
-    async def setup(self, host_uart=1, dev_uart=0, host_limit=2048, dev_limit=2048):
+    async def setup(self, host_uart=1, dev_uart=0):
         d = self.dut
         cocotb.start_soon(Clock(d.clk, 40, unit="ns").start())
         for name in INPUTS:
             getattr(d, name).value = 0
         d.host_uart.value = host_uart
         d.dev_uart.value = dev_uart
-        d.to_host_limit.value = host_limit
-        d.to_dev_limit.value = dev_limit
         d.rst_n.value = 0
         await ClockCycles(d.clk, 2)
         await FallingEdge(d.clk)
         d.rst_n.value = 1
         await FallingEdge(d.clk)
         cocotb.start_soon(self._device())
-        cocotb.start_soon(self._abort_watch())
         return self
-
-    async def _abort_watch(self):
-        while True:
-            await FallingEdge(self.dut.clk)
-            self.aborts += int(self.dut.d_abort.value)
 
     async def _device(self):
         d = self.dut
@@ -287,108 +277,38 @@ async def test_uart_frame_error_flag(dut):
     assert await env.transact(cmd(OP_STATUS, 1), 0x00, n_resp=1) == [0x40]
 
 
-# ------------------------------------------------------------------ timeouts
+# ------------------------------------------------------------------ no timeouts
+# Timeouts were removed to fit the tile: every wait lasts until the other side acts.
 
 async def idle_for(dut, cycles):
     await ClockCycles(dut.clk, cycles, rising=False)
 
 
 @cocotb.test()
-async def test_host_silence_mid_header_times_out(dut):
-    env = await Env(dut).setup(host_limit=128)
-    await env.send(cmd(OP_WRITE, 1))  # first header byte, then silence
-    assert int(dut.state.value) == S_HEADER
-    await idle_for(dut, 160)
-    assert int(dut.state.value) == S_IDLE and int(dut.err.value) == 1
-    # the parser starts clean; status reports the timeout until the next command
-    assert await env.transact(cmd(OP_STATUS, 1), 0x00, n_resp=1) == [TIMEOUT]
-    assert await env.transact(cmd(OP_WRITE, 1), 0x48, 0x00, n_resp=1) == [0x00]
-    assert int(dut.err.value) == 0
-
-
-@cocotb.test()
-async def test_host_silence_mid_payload_times_out(dut):
-    env = await Env(dut).setup(host_limit=128)
-    await env.send(cmd(OP_WRITE, 2), 0x48, 0x01)  # one of two payload bytes
-    assert int(dut.state.value) == S_WRITE
-    await idle_for(dut, 160)
-    assert int(dut.state.value) == S_IDLE and int(dut.err.value) == 1
-    assert env.starts == []
-
-
-@cocotb.test()
-async def test_slow_host_within_limit(dut):
-    env = await Env(dut).setup(host_limit=128)
-    for b in (cmd(OP_WRITE, 2), 0x48, 0x01):
-        await env.send(b)
-        await idle_for(dut, 80)  # long gaps, but shorter than the limit
-    await env.send(0x02)
+async def test_partial_command_waits_for_the_rest(dut):
+    env = await Env(dut).setup()
+    await env.send(cmd(OP_WRITE, 2), 0x48, 0x01)  # one payload byte short
+    await idle_for(dut, 2000)
+    assert int(dut.state.value) == S_WRITE and int(dut.err.value) == 0
+    await env.send(0x60)  # the missing byte completes it
     await env.wait_state(S_RESPOND)
-    assert await env.take(1) == [0x00]
-    assert env.writes == [0x01, 0x02] and int(dut.err.value) == 0
+    assert await env.take(1) == [0x00] and env.writes == [0x01, 0x60]
 
 
 @cocotb.test()
-async def test_device_timeout_aborts_and_reports(dut):
-    env = await Env(dut).setup(dev_limit=256)
+async def test_hung_device_keeps_controller_busy(dut):
+    env = await Env(dut).setup()
     env.hang = True
-    await env.send(cmd(OP_WRITE, 1), 0x48, 0x00)
-    await env.wait_state(S_RESPOND, limit=400)
-    assert await env.take(1) == [TIMEOUT]
-    assert env.aborts == 1 and int(dut.err.value) == 1
-
-
-@cocotb.test()
-async def test_read_timeout_still_returns_len_bytes(dut):
-    env = await Env(dut).setup(dev_limit=256)
-    env.hang = True
-    env.reads = [0x11]
-    env.n_reads = 1  # the device returns 1 of 2 bytes, then stalls
-    await env.send(cmd(OP_READ, 2), 0x48)
-    await env.wait_state(S_RESPOND, limit=400)
-    assert await env.take(2) == [0x11, 0x00]
-    assert env.aborts == 1 and int(dut.err.value) == 1
-
-
-@cocotb.test()
-async def test_uart_reply_window_ends_normally(dut):
-    env = await Env(dut).setup(host_uart=0, dev_uart=1, dev_limit=128)
-    env.hang = True
-    env.reads = [0x61, 0x62]
-    env.n_reads = 2  # the UART peer answers 2 of 3 bytes
-    await env.send(cmd(OP_WRRD, 3), 0x00, 0x41)
-    await env.wait_state(S_RESPOND, limit=400)
-    await env.pulse("h_frame_start", h_frame_rd=1)
-    assert await env.take(3) == [0x61, 0x62, 0x00]
-    await env.pulse("h_frame_end")
-    assert env.writes == [0x41] and env.aborts == 1
-    assert int(dut.err.value) == 0  # a closed reply window is not an error
-
-
-@cocotb.test()
-async def test_stalled_readout_times_out(dut):
-    env = await Env(dut).setup(host_uart=0, host_limit=128)
-    env.reads = [0x01, 0x02]
-    await env.send(cmd(OP_READ, 2), 0x48)
-    await env.wait_state(S_RESPOND)
-    await env.pulse("h_frame_start", h_frame_rd=1)
-    assert await env.take(1) == [0x01]  # host stops after one byte, frame left open
-    await idle_for(dut, 160)
-    assert int(dut.state.value) == S_IDLE and int(dut.err.value) == 1
+    await env.send(cmd(OP_READ, 1), 0x48)
+    await env.wait_state(S_EXEC, limit=5)
+    await idle_for(dut, 2000)
+    assert int(dut.state.value) == S_EXEC and int(dut.busy.value) == 1
 
 
 @cocotb.test()
 async def test_pending_response_waits_for_framed_host(dut):
-    env = await Env(dut).setup(host_uart=0, host_limit=128)
+    env = await Env(dut).setup(host_uart=0)
     await env.send(cmd(OP_READ, 1), 0x48)
     await env.wait_state(S_RESPOND)
-    await idle_for(dut, 300)  # SPI / I2C hosts may poll IRQ as long as they like
+    await idle_for(dut, 2000)  # SPI / I2C hosts may poll IRQ as long as they like
     assert int(dut.state.value) == S_RESPOND and int(dut.err.value) == 0
-
-
-@cocotb.test()
-async def test_zero_limit_disables_timeouts(dut):
-    env = await Env(dut).setup(host_limit=0)
-    await env.send(cmd(OP_WRITE, 1))
-    await idle_for(dut, 500)
-    assert int(dut.state.value) == S_HEADER and int(dut.err.value) == 0
