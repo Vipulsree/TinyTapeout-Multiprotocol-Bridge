@@ -177,8 +177,16 @@ async def test_nack_sets_err_until_next_command(dut):
 @cocotb.test()
 async def test_spi_div_and_max_length(dut):
     env = await Env(dut).setup()
-    await env.transact(cmd(OP_WRITE, 4, spi_div=3), 0x00, 1, 2, 3, 4, n_resp=1)
-    assert env.starts == [(OP_WRITE, 4, 0x00, 3)] and env.writes == [1, 2, 3, 4]
+    await env.transact(cmd(OP_WRITE, 2, spi_div=3), 0x00, 1, 2, n_resp=1)
+    assert env.starts == [(OP_WRITE, 2, 0x00, 3)] and env.writes == [1, 2]
+
+
+@cocotb.test()
+async def test_len_bit1_is_reserved(dut):
+    env = await Env(dut).setup()
+    # CMD[1:0] = 11 was LEN 4 with the 4-byte FIFO; now only CMD[0] counts: LEN 2
+    await env.transact((OP_WRITE << 6) | 0b11, 0x00, 7, 8, n_resp=1)
+    assert env.starts == [(OP_WRITE, 2, 0x00, 0)] and env.writes == [7, 8]
 
 
 @cocotb.test()
@@ -241,15 +249,15 @@ async def test_i2c_host_new_write_drops_response(dut):
 @cocotb.test()
 async def test_uart_device_buffers_rx_while_idle(dut):
     env = await Env(dut).setup(host_uart=0, dev_uart=1)
-    for b in (0x41, 0x42, 0x43):  # bytes arriving on the device-side UART
+    for b in (0x41, 0x42):  # bytes arriving on the device-side UART (FIFO holds 2)
         dut.d_rd_data.value = b
         await env.pulse("d_rd_push")
     assert int(dut.irq.value) == 1 and int(dut.state.value) == S_IDLE
-    await env.send(cmd(OP_READ, 2), 0x00)
+    await env.send(cmd(OP_READ, 1), 0x00)
     await env.wait_state(S_RESPOND, limit=10)
     assert env.starts == []  # served from the buffer, no device transaction
     await env.pulse("h_frame_start", h_frame_rd=1)
-    assert await env.take(2) == [0x41, 0x42]
+    assert await env.take(1) == [0x41]
     await env.pulse("h_frame_end")
     assert int(dut.irq.value) == 1  # one byte still waiting
     await env.send(cmd(OP_WRITE, 1), 0x00)  # a write discards unread RX bytes
@@ -259,14 +267,14 @@ async def test_uart_device_buffers_rx_while_idle(dut):
 @cocotb.test()
 async def test_fifo_overflow_sets_flag(dut):
     env = await Env(dut).setup(host_uart=0, dev_uart=1)
-    for b in range(5):
+    for b in range(3):
         dut.d_rd_data.value = b
         await env.pulse("d_rd_push")
     assert int(dut.err.value) == 1
     await env.send(cmd(OP_STATUS, 1), 0x00)
     await env.wait_state(S_RESPOND, limit=10)
     await env.pulse("h_frame_start", h_frame_rd=1)
-    assert await env.take(1) == [0x20 | 4]  # OVF + 4 bytes buffered
+    assert await env.take(1) == [0x20 | 2]  # OVF + 2 bytes buffered
 
 
 @cocotb.test()

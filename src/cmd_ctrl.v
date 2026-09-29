@@ -12,7 +12,8 @@
 // device engines is documented in docs/architecture.md.
 //
 // CMD[7:6] op: 00 write, 01 read, 10 write 1 byte then read, 11 status
-// CMD[3:2] SPI_DIV (SPI device only), CMD[1:0] LEN-1, ADDR[6:0] I2C address.
+// CMD[3:2] SPI_DIV (SPI device only), CMD[0] LEN-1 (1-2 bytes; CMD[1] reserved
+// since the FIFO shrank to 2 bytes for area), ADDR[6:0] I2C address.
 // Status byte: [7] NACK, [6] UART framing error, [5] FIFO overflow,
 //              [4:3] reserved (0), [2:0] FIFO count.
 //
@@ -43,7 +44,7 @@ module cmd_ctrl (
     // Controller -> device engine
     output reg        d_start,    // one-cycle pulse: run the device transaction
     output reg  [1:0] d_op,
-    output reg  [2:0] d_len,      // 1..4
+    output reg  [2:0] d_len,      // 1..2
     output reg  [6:0] d_addr,
     output reg  [1:0] d_spi_div,
     input  wire       d_done,     // one-cycle pulse: device transaction finished
@@ -80,7 +81,7 @@ module cmd_ctrl (
 
   // ---------------------------------------------------------------- FIFO
   wire       fifo_full, fifo_empty;
-  wire [2:0] fifo_count;
+  wire [1:0] fifo_count;
   wire [7:0] fifo_rdata;
 
   wire hdr_done = (st == S_HEADER) & h_rx_valid & ~h_frame_end;
@@ -101,7 +102,7 @@ module cmd_ctrl (
   wire fifo_clr = hdr_done & ~keep_fifo;
   wire ovf_evt = fifo_push & fifo_full & ~fifo_pop;
 
-  fifo4x8 u_fifo (
+  fifo2x8 u_fifo (
       .clk  (clk),
       .rst_n(rst_n),
       .clr  (fifo_clr),
@@ -114,7 +115,7 @@ module cmd_ctrl (
       .count(fifo_count)
   );
 
-  wire [7:0] status_byte = {f_nack, f_frame, f_ovf, 2'b00, fifo_count};
+  wire [7:0] status_byte = {f_nack, f_frame, f_ovf, 3'b000, fifo_count};
 
   // Decoded from the stored CMD byte
   wire [2:0] pay_len = (d_op == OP_WRITE) ? d_len : (d_op == OP_WRRD) ? 3'd1 : 3'd0;
@@ -127,7 +128,7 @@ module cmd_ctrl (
   always @(posedge clk) begin
     if (st == S_IDLE && h_rx_valid) begin
       d_spi_div <= h_rx_data[3:2];
-      d_len     <= {1'b0, h_rx_data[1:0]} + 3'd1;
+      d_len     <= {2'b00, h_rx_data[0]} + 3'd1;
     end
     if (hdr_done) d_addr <= h_rx_data[6:0];
   end

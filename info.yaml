@@ -20,7 +20,7 @@ project:
     - "project.v"
     - "sync2_edge.v"
     - "cmd_ctrl.v"
-    - "fifo4x8.v"
+    - "fifo2x8.v"
     - "clkdiv.v"
     - "uart_trx.v"
     - "spi_ms.v"

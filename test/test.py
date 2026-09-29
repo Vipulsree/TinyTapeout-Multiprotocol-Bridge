@@ -310,20 +310,20 @@ async def test_mode_101_i2c_to_spi(dut):
 
 # ---------------------------------------------------------------------- details and errors
 @cocotb.test()
-async def test_spi_master_divider_and_four_bytes(dut):
+async def test_spi_master_divider_and_two_bytes(dut):
     await reset(dut, M_UART_SPI)
     host = UartHost(dut)
     dev = spi_device(dut)
     for div in range(4):
-        # Measure one SCK period while writing 4 bytes
-        task = cocotb.start_soon(host.transact([cmd(OP_WRITE, 4, div), 0x00, 1, 2, 3, 4], 1))
+        # Measure one SCK period while writing 2 bytes (the FIFO's size)
+        task = cocotb.start_soon(host.transact([cmd(OP_WRITE, 2, div), 0x00, 1, 2], 1))
         await RisingEdge(dut.spi_sck)
         t0 = get_sim_time(unit="ns")
         await RisingEdge(dut.spi_sck)
         period = get_sim_time(unit="ns") - t0
         assert period == 8 * CLK_NS << div, f"SPI_DIV={div}: SCK period {period} ns"
         assert await task == [0x00]
-        assert dev.frames[-1] == [1, 2, 3, 4]
+        assert dev.frames[-1] == [1, 2]
 
 
 @cocotb.test()
@@ -366,11 +366,11 @@ async def test_uart_framing_error_and_overflow(dut):
     await ClockCycles(dut.clk, 50)
     assert int(dut.err.value) == 1
     assert await host.transact([cmd(OP_STATUS), 0], 1) == [FRAME]
-    # Five unsolicited bytes into a 4-byte FIFO: overflow, count 4
-    await dev.send([1, 2, 3, 4, 5])
+    # Three unsolicited bytes into a 2-byte FIFO: overflow, count 2
+    await dev.send([1, 2, 3])
     await ClockCycles(dut.clk, 50)
-    assert await host.transact([cmd(OP_STATUS), 0], 1) == [FRAME | OVF | 4]
-    assert await host.transact([cmd(OP_READ, 4), 0], 4) == [1, 2, 3, 4]
+    assert await host.transact([cmd(OP_STATUS), 0], 1) == [FRAME | OVF | 2]
+    assert await host.transact([cmd(OP_READ, 2), 0], 2) == [1, 2]
     assert int(dut.err.value) == 0
 
 

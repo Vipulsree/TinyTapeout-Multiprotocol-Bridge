@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for fifo4x8. Inputs change on falling edges; outputs are checked there too."""
+"""Unit tests for fifo2x8. Inputs change on falling edges; outputs are checked there too."""
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge
@@ -37,20 +37,23 @@ async def pop(dut):
 async def test_order_and_flags(dut):
     await setup(dut)
     assert int(dut.empty.value) == 1 and int(dut.rdata.value) == 0
-    for v in (0x11, 0x22, 0x33, 0x44):
+    for v in (0x11, 0x22):
         await push(dut, v)
-    assert int(dut.full.value) == 1 and int(dut.count.value) == 4
-    assert [await pop(dut) for _ in range(4)] == [0x11, 0x22, 0x33, 0x44]
+    assert int(dut.full.value) == 1 and int(dut.count.value) == 2
+    assert [await pop(dut) for _ in range(2)] == [0x11, 0x22]
+    for v in (0x33, 0x44):  # the pointers wrap
+        await push(dut, v)
+    assert [await pop(dut) for _ in range(2)] == [0x33, 0x44]
     assert int(dut.empty.value) == 1 and int(dut.count.value) == 0
 
 
 @cocotb.test()
 async def test_push_when_full_is_dropped(dut):
     await setup(dut)
-    for v in (1, 2, 3, 4, 5):
+    for v in (1, 2, 3):
         await push(dut, v)
-    assert int(dut.count.value) == 4
-    assert [await pop(dut) for _ in range(4)] == [1, 2, 3, 4]
+    assert int(dut.count.value) == 2
+    assert [await pop(dut) for _ in range(2)] == [1, 2]
 
 
 @cocotb.test()
@@ -65,7 +68,7 @@ async def test_pop_when_empty_is_ignored_and_reads_zero(dut):
 @cocotb.test()
 async def test_push_and_pop_together_when_full(dut):
     await setup(dut)
-    for v in (1, 2, 3, 4):
+    for v in (1, 2):
         await push(dut, v)
     dut.wdata.value = 9
     dut.push.value = 1
@@ -73,8 +76,8 @@ async def test_push_and_pop_together_when_full(dut):
     await FallingEdge(dut.clk)
     dut.push.value = 0
     dut.pop.value = 0
-    assert int(dut.count.value) == 4
-    assert [await pop(dut) for _ in range(4)] == [2, 3, 4, 9]
+    assert int(dut.count.value) == 2
+    assert [await pop(dut) for _ in range(2)] == [2, 9]
 
 
 @cocotb.test()

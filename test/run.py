@@ -19,17 +19,17 @@ TEST = Path(__file__).resolve().parent
 SRC = TEST.parent / "src"
 UNIT = TEST / "unit"
 
-TOP_SOURCES = [SRC / f for f in ("project.v", "sync2_edge.v", "cmd_ctrl.v", "fifo4x8.v",
+TOP_SOURCES = [SRC / f for f in ("project.v", "sync2_edge.v", "cmd_ctrl.v", "fifo2x8.v",
                                   "clkdiv.v", "uart_trx.v", "spi_ms.v", "i2c_engine.v")]
 
 # suite: (hdl toplevel, sources, directory of the test module, test module, parameters)
 SUITES = {
     "top": ("tb", TOP_SOURCES + [TEST / "tb.v"], TEST, "test", {}),
-    "fifo4x8": ("fifo4x8", [SRC / "fifo4x8.v"], UNIT, "test_fifo4x8", {}),
+    "fifo2x8": ("fifo2x8", [SRC / "fifo2x8.v"], UNIT, "test_fifo2x8", {}),
     "clkdiv": ("clkdiv", [SRC / "clkdiv.v"], UNIT, "test_clkdiv", {}),
     "sync2_edge": ("sync2_edge", [SRC / "sync2_edge.v"], UNIT, "test_sync2_edge",
                    {"N": 2, "INIT": 3, "FILTER": 2}),
-    "cmd_ctrl": ("cmd_ctrl", [SRC / "cmd_ctrl.v", SRC / "fifo4x8.v"], UNIT,
+    "cmd_ctrl": ("cmd_ctrl", [SRC / "cmd_ctrl.v", SRC / "fifo2x8.v"], UNIT,
                  "test_cmd_ctrl", {}),
     "uart_trx": ("tb_uart_trx", [SRC / "uart_trx.v", SRC / "sync2_edge.v", UNIT / "tb_uart_trx.v"], UNIT,
                  "test_uart_trx", {}),

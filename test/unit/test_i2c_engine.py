@@ -42,7 +42,7 @@ class Env:
     async def _engine_io(self):
         d = self.dut
         while True:
-            # FIFO heads change just after the rising edge, like fifo4x8; pulses
+            # FIFO heads change just after the rising edge, like the FIFO; pulses
             # are sampled mid-cycle and take effect at the next rising edge.
             await RisingEdge(d.clk)
             d.d_wr_data.value = self.fifo[0] if self.fifo else 0
