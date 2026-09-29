@@ -255,19 +255,13 @@ module tt_um_mpbridge (
 
   // ----------------------------------------------------------- engine -> controller
   // Pulses are already gated by role inside each engine, so they can be ORed.
-  // One receive bus carries the host engine's byte whenever it has one (the host
-  // wins a same-cycle clash, as cmd_ctrl's FIFO write already did) and the device
-  // engine's byte otherwise, so cmd_ctrl's host / device data mux collapses.
+  wire [7:0] h_rx_data     = host_spi ? s_rx_data : host_i2c ? i_rx_data : u_rx_data;
   wire       h_rx_valid    = u_h_rx_valid | s_h_rx_valid | i_h_rx_valid;
-  wire       rx_spi        = h_rx_valid ? host_spi : dev_spi;
-  wire       rx_i2c        = h_rx_valid ? host_i2c : dev_i2c;
-  wire [7:0] rx_bus        = rx_spi ? s_rx_data : rx_i2c ? i_rx_data : u_rx_data;
-  wire [7:0] h_rx_data     = rx_bus;
   wire       h_frame_start = s_h_frame_start | i_h_frame_start;
   wire       h_frame_rd    = host_spi | i_h_frame_rd;  // SPI frames are always read-out frames
   wire       h_frame_end   = s_h_frame_end | i_h_frame_end;
   wire       h_tx_take     = u_h_tx_take | s_h_tx_take | i_h_tx_take;
-  wire [7:0] d_rd_data     = rx_bus;
+  wire [7:0] d_rd_data     = dev_spi ? s_rx_data : dev_i2c ? i_rx_data : u_rx_data;
   wire       d_rd_push     = u_d_rd_push | s_d_rd_push | i_d_rd_push;
   wire       d_wr_pop      = u_d_wr_pop | s_d_wr_pop | i_d_wr_pop;
   wire       d_done        = u_d_done | s_d_done | i_d_done;
