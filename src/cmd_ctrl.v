@@ -273,8 +273,15 @@ module cmd_ctrl (
   assign busy       = (st == S_EXEC) | (host_uart & (st == S_RESPOND));
   assign err        = f_nack | f_frame | f_ovf | f_timeout;
   assign h_tx_valid = (st == S_RESPOND) & (rem != 3'd0);
-  assign h_tx_data  = h_tx_valid ? (rsp_status ? status_byte : fifo_rdata) : 8'h00;
-  assign d_wr_data  = fifo_rdata;
+  // One byte bus serves both engines: the FIFO head while a device transaction
+  // runs (only the device engine reads it then), the response otherwise (only
+  // the host engine reads it then). Sharing it lets synthesis drop each engine's
+  // host / device data mux. A host that clocks a read-out during EXEC, which no
+  // correct host does, would see FIFO data instead of 0x00.
+  wire [7:0] tx_bus = (st == S_EXEC) ? fifo_rdata :
+                      h_tx_valid ? (rsp_status ? status_byte : fifo_rdata) : 8'h00;
+  assign h_tx_data  = tx_bus;
+  assign d_wr_data  = tx_bus;
   assign d_wr_avail = ~fifo_empty;
 
 endmodule
