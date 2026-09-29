@@ -33,13 +33,13 @@ Every transaction starts with a 2-byte header:
 - Then the write payload.
 
 Reads return the data bytes. Writes and status return one status byte:
-bit 7 I2C NACK, bit 6 UART framing error, bit 5 FIFO overflow, bit 4 timeout,
+bit 7 I2C NACK, bit 6 UART framing error, bit 5 FIFO overflow, bits 4:3 reserved (0),
 bits 2:0 FIFO count.
 
-A timeout guards every wait. A host that goes silent mid-command (15-20 idle
-characters for a UART host, 41.9 ms otherwise) has the partial command dropped.
-A device transaction that stalls (41.9 ms for I2C, which covers clock
-stretching) is aborted. Both set the timeout bit and `ERR`.
+There are no timeouts (removed to fit the tile): a UART host must send whole
+commands, a stalled I2C device keeps `BUSY` high until reset, and a UART device
+must answer a write-then-read with exactly LEN bytes. SPI and I2C hosts drop a
+partial command by ending the frame.
 
 Example (mode 001): send `81 48 00` over UART to read 2 bytes from register 0x00
 of an I2C sensor at 0x48; the bridge answers with the 2 bytes.

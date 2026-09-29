@@ -16,32 +16,29 @@ Course: EC373TA VLSI Physical Design. Track B (the I3C bridge) lives in its own 
 | --- | --- | --- |
 | 1 | Repo, pin map, header format, test setup, I²C bus models | Done |
 | 2 | `cmd_ctrl`, `fifo4x8`, `sync2_edge`, `clkdiv` with unit tests | Done |
-| 2 | Timeout (`timeout20`), limits per mode and baud rate | Done |
+| 2 | Timeout (`timeout20`), limits per mode and baud rate | Done; removed in week 7 for area |
 | 3 | Push to GitHub, skeleton hardened in CI | Done (26 Sep) |
 | 4–5 | `uart_trx` (M1), `spi_ms` master/slave (M2) | Done early (27 Sep) |
 | 6 | `i2c_engine` controller/target (M2), mode 110 loopback | Done early (27 Sep) |
-| 7–8 | Full RTL hardened (area, timing), mode matrix 24/24 | Matrix passes; **does not fit 1x1 (108%)**, see below |
+| 7–8 | Full RTL hardened (area, timing), mode matrix 24/24 | Matrix passes; **does not fit 1x1 yet (89%)**, see below |
 | 8–9 | Formal properties F1–F5, FPGA dry run | To do |
 | 10–12 | Gate-level sim, sign-off, datasheet, submit | To do |
 
-Test results today: 82/82 passing (top level 19, cmd_ctrl 23, uart_trx 6, spi_ms 5,
-i2c_engine 9, fifo4x8 5, clkdiv 3, sync2_edge 3, timeout20 5, limits 1, I²C model 3).
+Test results today: 67/67 passing (top level 16, cmd_ctrl 17, uart_trx 6, spi_ms 5,
+i2c_engine 9, fifo4x8 5, clkdiv 3, sync2_edge 3, I²C model 3).
 The top level runs all six modes × {write, read, write-then-read, status}, the
-mode 110 echo, error flags, timeouts and the idle-only mode latch.
+mode 110 echo, error flags and the idle-only mode latch.
 
-Timeout limits live at the top of `src/project.v`; see the Timeouts section of
-[docs/architecture.md](docs/architecture.md) for the values and how to change them.
-
-**Area:** the complete design needs 108% of a 1x1 tile after two area
-optimisations (shared UART prescaler, power-of-two timeouts). Fitting 1x1 would
-mean dropping timeouts and several modes, so Track A is paused pending a
-decision on a 1x2 tile. Numbers per step: Open items in
-[docs/architecture.md](docs/architecture.md).
+**Area:** being cut down to a 1x1 tile one measured step at a time. Four
+zero-loss optimisations took it from 121% to 100%; removing the timeouts took
+it to 89% (routing needs about 77%). Numbers per step and the remaining
+options: Open items in [docs/architecture.md](docs/architecture.md); what the
+missing timeouts mean in use: "No timeouts" there.
 
 ## Layout
 
 ```
-src/        project.v (tt_um_mpbridge), cmd_ctrl.v, fifo4x8.v, timeout20.v, sync2_edge.v, clkdiv.v,
+src/        project.v (tt_um_mpbridge), cmd_ctrl.v, fifo4x8.v, sync2_edge.v, clkdiv.v,
             uart_trx.v, spi_ms.v, i2c_engine.v
 test/       tb.v + test.py (top level, run by the TT CI through make, RTL and gate level)
 test/unit/  unit tests per module + the I²C model check

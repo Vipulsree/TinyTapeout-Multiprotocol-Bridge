@@ -10,8 +10,7 @@ This is the internal contract between `cmd_ctrl` and the three protocol engines
 | `sync2_edge` | M2 | Done, unit-tested | 7 inputs; SCL/SDA have the 2-sample glitch filter |
 | `fifo4x8` | M1 | Done, unit-tested | First-word fall-through; reads 0x00 when empty |
 | `clkdiv` | M2 | Done, unit-tested | Shared by the SPI master and the I2C controller |
-| `cmd_ctrl` | M1 | Done, unit-tested | Header parser + FSM + FIFO + status flags + timeouts |
-| `timeout20` | M1 | Done, unit-tested | 21-bit inactivity timer, power-of-two limits (max 41.9 ms), used by `cmd_ctrl` |
+| `cmd_ctrl` | M1 | Done, unit-tested | Header parser + FSM + FIFO + status flags (timeouts removed for area) |
 | `uart_trx` | M1 | Done, unit-tested | 8N1, one shared baud prescaler; host, device and loopback roles |
 | `spi_ms` | M2 | Done, unit-tested | Mode 0 master and slave on one shift register |
 | `i2c_engine` | M2 | Done, unit-tested | Controller and target on one shift register |
@@ -79,7 +78,7 @@ The device engine is the one that drives the peripheral.
 | `d_rd_data[7:0]`, `d_rd_push` | engine -> ctrl | A byte read from the device (or a UART RX byte) |
 | `d_nack` | engine -> ctrl | I2C NACK: pulse together with `d_done` |
 | `d_done` | engine -> ctrl | Transaction finished |
-| `d_abort` | ctrl -> engine | Timeout: stop now, release the bus (I2C: send STOP if the bus allows), do not pulse `d_done` |
+| `d_abort` | ctrl -> engine | Stop now, release the bus (I2C: send STOP if the bus allows), do not pulse `d_done`. Tied to 0 in `project.v` since the timeouts were removed; the engines keep the input |
 | `frame_err` | engine -> ctrl | UART stop bit was 0 (either role) |
 
 Sequences the engine must produce:
@@ -94,34 +93,19 @@ A NACK at any point: send STOP, pulse `d_nack` and `d_done` together.
 While idle, a UART device engine pushes every received byte with `d_rd_push`;
 the controller buffers it (IRQ goes high) or drops it when not allowed.
 
-## Timeouts
+## No timeouts
 
-One 21-bit counter in `cmd_ctrl` (module `timeout20`) runs whenever the
-controller is waiting on someone. Every handshake pulse restarts it, so a limit
-is "this long with no progress", not a limit on the whole transaction.
-Every limit is a power of two, so expiry is one counter bit (`cnt & limit`)
-rather than a 21-bit comparison; a limit of 0 disables it. This saved about
-630 um2 against arbitrary 20-bit limits.
+The timeouts (a 21-bit inactivity timer in `cmd_ctrl` with per-mode,
+per-baud limits) were removed to fit the 1x1 tile: they cost about 1,500 um2.
+Status bit 4 now reads 0. What that means in use:
 
-| Waiting in | On expiry | Status bit 4 (TIMEOUT) |
-| --- | --- | --- |
-| HEADER / WRITE (host went silent mid-command) | Drop the partial command, back to IDLE. This also resynchronises a UART host after a lost byte | Set |
-| EXEC (device transaction stalled) | Pulse `d_abort`, respond anyway (reads padded with 0x00) | Set |
-| EXEC, UART device write-then-read | Reply window closed: pulse `d_abort`, return the bytes received | Not set |
-| RESPOND, read-out frame open or UART host sending | Drop the rest of the response, back to IDLE | Set |
-| RESPOND before an SPI / I2C host starts reading | Never times out: those hosts may poll IRQ as long as they like | - |
-
-The limits are constants at the top of `src/project.v`; change them there,
-keeping each one a power of two. UART limits scale with BAUD_SEL (a character
-is 10 bits of 2604 / 1302 / 434 / 217 clocks), bus limits cover the worst-case
-transfer time.
-
-| Limit | 9600 | 19200 | 57600 | 115200 |
-| --- | --- | --- | --- | --- |
-| Host UART silence (`TO_HOST_UART_*`) | 2^19 = 20 chars (21 ms) | 2^18 = 20 chars | 2^16 = 15 chars | 2^15 = 15 chars (1.3 ms) |
-| UART device reply window (`TO_DEV_UART_*`) | 2^18 = 10 chars (10.5 ms) | 2^17 = 10 chars | 2^15 = 7.5 chars | 2^14 = 7.5 chars (0.66 ms) |
-| SPI / I2C host, I2C device (`TO_BUS`) | 2^20 = 41.9 ms, above the SMBus tTIMEOUT (25-35 ms); covers clock stretching | | | |
-| SPI device (`TO_SPI_DEV`) | 2^16 = 2.6 ms; the worst 5-byte transfer at SCK/64 takes 2,560 clocks | | | |
+| Situation | Behaviour now |
+| --- | --- |
+| UART host sends part of a command, then stops | The bridge keeps waiting for the rest; a host that lost a byte must send filler bytes (or reset the bridge) to resynchronise |
+| SPI / I2C host ends its frame mid-command | Unchanged: the partial command is dropped |
+| I2C device stretches SCL forever | The bridge stays in EXEC (`BUSY` high) until reset |
+| UART device answers a write-then-read with fewer than LEN bytes | The bridge waits for the missing bytes (no reply window) |
+| SPI / I2C host never reads the response | Unchanged: the response waits as long as needed |
 
 ## Rates (25 MHz clock)
 
@@ -172,18 +156,21 @@ only when `cmd_ctrl` can take the transfer, and never stretches the clock.
 
 - Done: the mode latch also waits for every engine to be idle (no UART byte in
   flight, no SPI frame, no I2C transfer).
-- **Area: does not fit a 1x1 tile yet (paused for a decision on 1x2).**
+- **Area: does not fit a 1x1 tile yet; cutting one step at a time.**
   CI synthesis and placement utilisation (the core is 16,493 um2; placement adds
-  about 14% over the synthesised area):
+  about 14% over the synthesised area; routing needs roughly 77% or less):
 
   | Step | Cell area | Utilisation |
   | --- | --- | --- |
   | Complete RTL | 16,845 um2 | 121% |
   | Shared UART prescaler | 15,544 um2 | 111% |
-  | Power-of-two timeouts (current) | 15,151 um2 | 108% |
-  | Experiment: every timeout removed (branch `exp/no-timeouts`) | 13,594 um2 | 97%, detailed placement fails |
+  | Power-of-two timeouts | 15,151 um2 | 108% |
+  | No reset on data registers | 14,370 um2 | 102% |
+  | One TX byte bus for both engines | 14,097 um2 | 100% |
+  | (One RX byte bus: made CI worse, reverted) | 14,217 um2 | 101% |
+  | **Timeouts removed (current)** | 12,608 um2 | 89%, detailed placement fails |
 
-  Routing needs roughly 75% or less. Measured with local synthesis, even
-  removing the timeouts, modes 010/011/100, half the FIFO, 400 kHz I2C, two baud
-  rates and loopback only reaches about 76%. Keeping every feature needs a 1x2
-  tile (about 50%).
+  Remaining options, measured with local synthesis on the current RTL: drop the
+  I2C target role (modes 100/101) -1,170 um2, FIFO 4 -> 2 bytes -810, drop the
+  UART device role (010/100) -545, drop the SPI slave role (010/011) -530,
+  I2C 400 kHz only -150, drop loopback -40.
