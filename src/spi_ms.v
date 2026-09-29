@@ -96,10 +96,23 @@ module spi_ms (
   // Byte as it completes: master on its 8th falling edge, slave on its 8th rising edge.
   assign rx_data = {sh[6:0], master ? miso : mosi};
 
-  // ---------------------------------------------------------------- shared datapath
+  // ---------------------------------------------------------------- shift register
+  // Data only, so no reset: it is always loaded before anything reads it.
+  wire m_shift = master & ~d_abort & ~d_start & m_tick & ~m_end & sck_o;  // falling edge
+
+  always @(posedge clk) begin
+    if (master) begin
+      if (d_start && !d_abort) sh <= (d_op == OP_READ) ? 8'h00 : d_wr_data;
+      else if (m_shift) sh <= (bcnt == 3'd7 && m_more) ? (m_pop_next ? d_wr_data : 8'h00) : {sh[6:0], miso};
+    end else if (slave) begin
+      if (h_frame_start || (s_sel && sck_fall && s_load)) sh <= h_tx_data;
+      else if (s_sel && sck_rise) sh <= {sh[6:0], mosi};
+    end
+  end
+
+  // ---------------------------------------------------------------- control
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      sh      <= 8'h00;
       bcnt    <= 3'd0;
       m_on    <= 1'b0;
       m_end   <= 1'b0;
@@ -123,7 +136,6 @@ module spi_ms (
           m_first <= 1'b1;
           m_left  <= (d_op == OP_WRRD) ? d_len + 3'd1 : d_len;
           bcnt    <= 3'd0;
-          sh      <= (d_op == OP_READ) ? 8'h00 : d_wr_data;
         end else if (m_tick) begin
           if (m_end) begin
             m_on   <= 1'b0;
@@ -134,12 +146,10 @@ module spi_ms (
           end else begin  // falling edge: sample MISO, present the next MOSI bit
             sck_o <= 1'b0;
             bcnt  <= bcnt + 3'd1;
-            sh    <= {sh[6:0], miso};
             if (bcnt == 3'd7) begin
               m_first <= 1'b0;
               m_left  <= m_left - 3'd1;
               if (!m_more) m_end <= 1'b1;
-              else sh <= m_pop_next ? d_wr_data : 8'h00;
             end
           end
         end
@@ -155,16 +165,13 @@ module spi_ms (
           s_load <= 1'b0;
         end
         if (h_frame_start) begin  // first response byte goes out before the first SCK
-          sh     <= h_tx_data;
           miso_o <= h_tx_data[7];
         end else if (s_sel && sck_rise) begin
-          sh   <= {sh[6:0], mosi};
           bcnt <= bcnt + 3'd1;
           if (bcnt == 3'd7) s_load <= 1'b1;
         end else if (s_sel && sck_fall) begin
           if (s_load) begin
             s_load <= 1'b0;
-            sh     <= h_tx_data;
             miso_o <= h_tx_data[7];
           end else begin
             miso_o <= sh[7];

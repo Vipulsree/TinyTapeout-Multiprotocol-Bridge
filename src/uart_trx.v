@@ -89,7 +89,6 @@ module uart_trx (
       r_busy <= 1'b0;
       r_bit  <= 4'd0;
       r_ph   <= 3'd0;
-      r_sh   <= 8'h00;
     end else if (!r_busy) begin
       if (r_en && rx_fall) begin  // start bit: its middle is the 4th tick from here
         r_busy <= 1'b1;
@@ -106,11 +105,14 @@ module uart_trx (
           if (rx) r_busy <= 1'b0;  // glitch, not a start bit
         end else if (r_bit == 4'd9) begin
           r_busy <= 1'b0;
-        end else begin
-          r_sh <= {rx, r_sh[7:1]};
         end
       end
     end
+  end
+
+  // Received data only, so no reset: nothing reads it before a byte arrives.
+  always @(posedge clk) begin
+    if (r_sample && r_bit != 4'd0 && r_bit != 4'd9) r_sh <= {rx, r_sh[7:1]};
   end
 
   // ---------------------------------------------------------------- transmitter
@@ -136,12 +138,10 @@ module uart_trx (
       t_busy <= 1'b0;
       t_bit  <= 4'd0;
       t_ph   <= 3'd0;
-      t_sh   <= 8'h00;
       t_pend <= 1'b0;
       tx     <= 1'b1;
     end else begin
       tx <= ~t_busy | (t_bit == 4'd9) | ((t_bit != 4'd0) & t_sh[0]);
-      if (t_load) t_sh <= t_data;
       if (!t_busy) begin
         if (t_load) begin
           t_busy <= 1'b1;
@@ -158,11 +158,16 @@ module uart_trx (
             t_busy <= t_pend | t_load;
           end else begin
             t_bit <= t_bit + 4'd1;
-            if (t_bit != 4'd0) t_sh <= {1'b0, t_sh[7:1]};
           end
         end
       end
     end
+  end
+
+  // Byte being sent, so no reset: TX only shows it while busy.
+  always @(posedge clk) begin
+    if (t_load) t_sh <= t_data;
+    else if (t_bitend && !t_last && t_bit != 4'd0) t_sh <= {1'b0, t_sh[7:1]};
   end
 
   // ---------------------------------------------------------------- device sequencer

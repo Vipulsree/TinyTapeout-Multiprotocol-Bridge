@@ -135,10 +135,28 @@ module i2c_engine (
   assign h_frame_end   = t_stop & t_ours;
   assign h_tx_take     = t_load;
 
-  // ================================================================ datapath
+  // ================================================================ shift register
+  // Data only, so no reset: every use follows a load. Controller and target
+  // never run together, so the two halves below never compete.
+  wire c_shreg = ctl & ~d_abort & ~d_start & c_symend;  // controller symbol boundary
+  wire t_shreg = tgt & ~t_start & ~t_stop;
+
+  always @(posedge clk) begin
+    if (c_shreg) begin
+      if (c_st == C_START) sh <= {d_addr, c_rnw};
+      else if (c_bytes && !c_ackbit) sh <= {sh[6:0], samp};
+      else if (c_bytes && !samp && ((c_st == C_ADDR && !c_rnw) || (c_st == C_WR && !c_last)))
+        sh <= d_wr_data;  // next byte to write
+    end else if (t_shreg) begin
+      if (t_load) sh <= h_tx_data;  // next byte to send
+      else if (t_rx && scl_rise && bcnt != 4'd8) sh <= {sh[6:0], sda};
+      else if (t_st == T_RD && scl_fall && bcnt != 4'd8) sh <= {sh[6:0], 1'b0};
+    end
+  end
+
+  // ================================================================ control
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      sh        <= 8'h00;
       bcnt      <= 4'd0;
       c_st      <= C_IDLE;
       ph        <= PA;
@@ -190,11 +208,9 @@ module i2c_engine (
               c_started <= 1'b1;
               c_st      <= C_ADDR;
               bcnt      <= 4'd0;
-              sh        <= {d_addr, c_rnw};
             end
             C_ADDR, C_WR, C_RD:
             if (!c_ackbit) begin
-              sh   <= {sh[6:0], samp};
               bcnt <= bcnt + 4'd1;
             end else begin
               bcnt <= 4'd0;
@@ -202,14 +218,9 @@ module i2c_engine (
                 c_nack <= 1'b1;
                 c_st   <= C_STOP;
               end else if (c_st == C_ADDR) begin
-                if (c_rnw) c_st <= C_RD;
-                else begin
-                  c_st <= C_WR;
-                  sh   <= d_wr_data;
-                end
+                c_st <= c_rnw ? C_RD : C_WR;
               end else if (!c_last) begin
                 c_cnt <= c_cnt - 3'd1;
-                if (c_st == C_WR) sh <= d_wr_data;
               end else if (c_st == C_WR && d_op == OP_WRRD && !c_second) begin
                 c_second <= 1'b1;  // repeated START, then the read phase
                 c_cnt    <= d_len;
@@ -248,7 +259,6 @@ module i2c_engine (
         case (t_st)
           T_ADDR, T_WR:
           if (scl_rise && bcnt != 4'd8) begin
-            sh   <= {sh[6:0], sda};
             bcnt <= bcnt + 4'd1;
           end else if (t_byte) begin
             if (t_st == T_WR || t_match) begin  // ACK
@@ -276,7 +286,6 @@ module i2c_engine (
               t_sda <= 1'b0;
               t_st  <= T_RACK;
             end else begin
-              sh    <= {sh[6:0], 1'b0};
               t_sda <= ~sh[6];
             end
           end
@@ -288,10 +297,7 @@ module i2c_engine (
           end
           default: ;  // T_IDLE, T_WAIT: wait for START or STOP
         endcase
-        if (t_load) begin  // next byte to send, MSB on SDA
-          sh    <= h_tx_data;
-          t_sda <= ~h_tx_data[7];
-        end
+        if (t_load) t_sda <= ~h_tx_data[7];  // next byte's MSB on SDA
       end
     end
   end

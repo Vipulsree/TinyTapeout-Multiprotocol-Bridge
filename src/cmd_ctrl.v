@@ -145,6 +145,17 @@ module cmd_ctrl (
       .expired(to_exp)
   );
 
+  // ---------------------------------------------------------------- command fields
+  // Data only, so no reset: engines read them only after d_start. (d_op keeps
+  // its reset because the controller's own decode reads it.)
+  always @(posedge clk) begin
+    if (st == S_IDLE && h_rx_valid) begin
+      d_spi_div <= h_rx_data[3:2];
+      d_len     <= {1'b0, h_rx_data[1:0]} + 3'd1;
+    end
+    if (hdr_done) d_addr <= h_rx_data[6:0];  // a timeout never coincides with a byte
+  end
+
   // ---------------------------------------------------------------- FSM
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -156,9 +167,6 @@ module cmd_ctrl (
       d_start    <= 1'b0;
       d_abort    <= 1'b0;
       d_op       <= OP_WRITE;
-      d_len      <= 3'd1;
-      d_addr     <= 7'd0;
-      d_spi_div  <= 2'd0;
       f_nack     <= 1'b0;
       f_frame    <= 1'b0;
       f_ovf      <= 1'b0;
@@ -170,10 +178,8 @@ module cmd_ctrl (
       case (st)
         S_IDLE:
         if (h_rx_valid) begin
-          d_op      <= h_rx_data[7:6];
-          d_spi_div <= h_rx_data[3:2];
-          d_len     <= {1'b0, h_rx_data[1:0]} + 3'd1;
-          st        <= S_HEADER;
+          d_op <= h_rx_data[7:6];
+          st   <= S_HEADER;
         end
 
         S_HEADER:
@@ -182,7 +188,6 @@ module cmd_ctrl (
           st        <= S_IDLE;
           f_timeout <= 1'b1;
         end else if (h_rx_valid) begin
-          d_addr <= h_rx_data[6:0];
           if (d_op != OP_STATUS) begin
             f_nack    <= 1'b0;
             f_frame   <= 1'b0;
