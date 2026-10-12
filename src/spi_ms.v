@@ -8,7 +8,7 @@
 // SPI engine, mode 0 (CPOL = 0, CPHA = 0), MSB first. Master and slave share one
 // 8-bit shift register and bit counter; only one role is active per mode.
 //
-// master (device side, modes 000 / 101): drives CS_N, SCK and MOSI for d_start
+// master (device side, mode 000): drives CS_N, SCK and MOSI for d_start
 //   transactions; SCK half-periods come from clkdiv ticks. MOSI changes on the
 //   SCK falling edge. MISO is sampled late, at the falling edge, through the
 //   synchroniser, which leaves the whole SCK period for the slave's output delay.

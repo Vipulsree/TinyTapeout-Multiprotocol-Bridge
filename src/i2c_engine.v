@@ -9,11 +9,14 @@
 // open-drain: the engine only ever pulls low. (The I2C target role for modes
 // 100 / 101 was removed to fit the 1x1 tile; see docs/architecture.md.)
 //
-// Every START, STOP and bit is one symbol of four quarter periods (clkdiv
-// ticks):  A  SCL low, SDA changes | B  SCL released; waits while a device
-// stretches it | C  SCL high | D  SCL pulled low.  SDA is sampled at the
-// B -> C tick, so a stretched clock never shortens the high time. The line
-// drivers are registered, one clock behind the phase counter.
+// Every START, STOP and bit is one symbol of four phases counted in quarter
+// periods (clkdiv ticks):  A  SCL low, SDA changes | B  SCL released; waits
+// while a device stretches it | C  SCL high | D  SCL pulled low.  SDA is sampled
+// at the B -> C tick, so a stretched clock never shortens the high time. In
+// START and STOP symbols B and C last two ticks each, so the START hold,
+// repeated-START set-up and STOP set-up times are half an SCL period (5.04 us
+// at 99.2 kHz; UM10204 asks for 4.0 / 4.7 / 4.0 us) instead of a quarter. The
+// line drivers are registered, one clock behind the phase counter.
 module i2c_engine (
     input wire clk,
     input wire rst_n,
@@ -62,12 +65,15 @@ module i2c_engine (
   reg       c_nack;
   reg       c_abort;    // d_abort: finish with STOP, ignore stretching, no d_done
   reg       samp;       // SDA sampled at the B -> C tick
+  reg       c_half;     // START / STOP: first of the two ticks of phase B or C is over.
+                        // Cleared by the tick in phase A, so a new START or an abort needs no reset.
   reg       c_scl_q;    // registered line drivers: the decode below glitches between
   reg       c_sda_q;    // states, and a glitch on SCL or SDA is a clock edge or a START
 
   wire c_on     = ctl & (c_st != C_IDLE);
   wire c_hold   = (ph == PB) & ~scl & ~c_abort;  // a device is stretching SCL
   wire c_tick   = c_on & tick;
+  wire c_slow   = ((c_st == C_START) | (c_st == C_STOP)) & (ph[1] ^ ph[0]) & ~c_half;  // B, C: stay one more tick
   wire c_symend = c_tick & (ph == PD);
   wire c_ackbit = (bcnt == 4'd8);
   wire c_last   = (c_cnt == 3'd1);
@@ -113,6 +119,7 @@ module i2c_engine (
       c_nack    <= 1'b0;
       c_abort   <= 1'b0;
       samp      <= 1'b1;
+      c_half    <= 1'b0;
       c_scl_q   <= 1'b0;
       c_sda_q   <= 1'b0;
       d_done    <= 1'b0;
@@ -141,7 +148,8 @@ module i2c_engine (
         c_nack    <= 1'b0;
         c_abort   <= 1'b0;
       end else if (c_tick) begin
-        ph <= ph + 2'd1;
+        c_half <= c_slow;
+        if (!c_slow) ph <= ph + 2'd1;
         if (ph == PB) samp <= sda;
         if (ph == PD) begin
           case (c_st)
@@ -190,5 +198,9 @@ module i2c_engine (
   assign scl_low = c_scl_q;
   assign sda_low = c_sda_q;
   assign idle    = ~c_on;
+
+`ifdef FORMAL
+  `include "i2c_engine_props.vh"
+`endif
 
 endmodule

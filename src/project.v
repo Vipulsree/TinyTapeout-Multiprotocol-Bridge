@@ -280,4 +280,8 @@ module tt_um_mpbridge (
   wire _unused = &{ena, ui_in[6], pin_q[4], pin_rise[6:5], pin_rise[3:2], pin_rise[0], pin_fall[6:5],
                    pin_fall[3:2], d_wr_avail, can_read, can_write, 1'b0};
 
+`ifdef FORMAL
+  `include "project_props.vh"
+`endif
+
 endmodule

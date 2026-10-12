@@ -54,4 +54,8 @@ module fifo2x8 (
   assign count = cnt;
   assign rdata = empty ? 8'h00 : mem[rp];
 
+`ifdef FORMAL
+  `include "fifo2x8_props.vh"
+`endif
+
 endmodule

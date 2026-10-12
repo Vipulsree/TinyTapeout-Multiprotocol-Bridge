@@ -62,8 +62,8 @@ module cmd_ctrl (
     // Status
     output wire [2:0] state,      // DBG_STATE: 0 IDLE, 1 HEADER, 2 WRITE, 3 EXEC, 4 RESPOND
     output wire       idle,
-    output wire       can_read,   // a response is waiting (I2C target ACKs a read)
-    output wire       can_write,  // not running a device transaction (I2C target ACKs a write)
+    output wire       can_read,   // a response is waiting (unused: the I2C target was removed)
+    output wire       can_write,  // not running a device transaction (unused, as above)
     output wire       irq,
     output wire       busy,
     output wire       err
@@ -243,5 +243,9 @@ module cmd_ctrl (
   assign h_tx_data  = tx_bus;
   assign d_wr_data  = tx_bus;
   assign d_wr_avail = ~fifo_empty;
+
+`ifdef FORMAL
+  `include "cmd_ctrl_props.vh"
+`endif
 
 endmodule

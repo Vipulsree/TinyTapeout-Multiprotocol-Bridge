@@ -19,7 +19,7 @@
 //   host : the UART peer is the host. RX bytes go to cmd_ctrl and the response
 //          streams out on TX (modes 000, 001).
 //   dev  : the UART peer is the device. Runs d_start transactions and hands every
-//          RX byte to cmd_ctrl, which buffers it while idle (modes 010, 100).
+//          RX byte to cmd_ctrl, which buffers it while idle (mode 010).
 //   loop : mode 110 self-test. Every RX byte is echoed on TX; cmd_ctrl sees nothing.
 //
 // The transmitter accepts the next byte during the stop bit of the current one

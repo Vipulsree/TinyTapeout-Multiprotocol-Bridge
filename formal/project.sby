@@ -1,0 +1,30 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 6
+cover: mode cover
+cover: depth 30
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog -sv -formal -DFV_TOP project.v sync2_edge.v cmd_ctrl.v fifo2x8.v clkdiv.v uart_trx.v spi_ms.v i2c_engine.v
+prep -top tt_um_mpbridge
+
+[files]
+../src/project.v
+../src/sync2_edge.v
+../src/cmd_ctrl.v
+../src/fifo2x8.v
+../src/clkdiv.v
+../src/uart_trx.v
+../src/spi_ms.v
+../src/i2c_engine.v
+project_props.vh
+cmd_ctrl_props.vh
+fifo2x8_props.vh
+i2c_engine_props.vh
