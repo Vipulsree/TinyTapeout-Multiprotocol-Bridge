@@ -1,7 +1,7 @@
 # Tiny Tapeout project information
 project:
   title:        "Multi-mode UART/SPI/I2C bridge"    # Project title
-  author:       "Vipul S, Shylashree N, RV College of Engineering"   # authors, guide, college
+  author:       "Vipul S, Shridatta M Hebbar, Shreevathsa Kuthethoor, Anay Katti, Shylashree N, RV College of Engineering"
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
   description:  "UART or SPI host to SPI, I2C or UART device bridge (4 modes + loopback), selected by pins"
   language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc

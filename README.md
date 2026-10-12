@@ -84,7 +84,6 @@ Formal proofs (about 20 seconds):
 ## Before submission
 
 - Run the FPGA dry run ([docs/fpga_dry_run.md](docs/fpga_dry_run.md)) and keep its transcript.
-- Check the `author` line in `info.yaml`: every author, then the guide and the college.
 - The top module stays `tt_um_mpbridge`: no other project on the shuttle uses the name.
 - Import the repository into the department's GitHub account, set its description and
   Pages source there, and submit that URL to the shuttle.
