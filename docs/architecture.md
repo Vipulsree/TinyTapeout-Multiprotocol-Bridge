@@ -13,7 +13,7 @@ This is the internal contract between `cmd_ctrl` and the three protocol engines
 | `cmd_ctrl` | M1 | Done, unit-tested | Header parser + FSM + FIFO + status flags (timeouts removed for area) |
 | `uart_trx` | M1 | Done, unit-tested | 8N1, one shared baud prescaler; host, device and loopback roles |
 | `spi_ms` | M2 | Done, unit-tested | Mode 0 master and slave on one shift register |
-| `i2c_engine` | M2 | Done, unit-tested | Controller only (the target role was cut for area) |
+| `i2c_engine` | M2 | Done, unit-tested | Controller only (the target role was cut for area); START / STOP timing per UM10204 |
 | `project.v` | M1 | Done | Mode latch, engine wiring, pin directions; mode matrix passes; 1x1 sign-off clean |
 
 ## Clock and signal rules
@@ -145,9 +145,38 @@ response byte is loaded on the 8th falling edge.
 `clkdiv` quarter periods (A: SCL low, SDA changes; B: SCL released, held while a
 device stretches it; C: SCL high; D: SCL low). SDA is sampled at the B-to-C tick.
 `d_abort` finishes with a STOP symbol that no longer waits for a stretched clock.
-Known issue: at 100 kHz a quarter is 2.5 us, so START hold, repeated-START setup
-and STOP setup are 2.5 us, short of the I2C spec's 4.0 / 4.7 / 4.0 us; 400 kHz
-(0.68 us against 0.6 us) meets it.
+In START and STOP symbols phases B and C last two ticks each, so the START hold,
+repeated-START set-up and STOP set-up times are half an SCL period. Measured by
+`test_ctl_start_stop_timing` in simulation:
+
+| Time | 99.2 kHz | UM10204 standard mode | 367.6 kHz | UM10204 fast mode |
+| --- | --- | --- | --- | --- |
+| tHD;STA (START hold) | 5.04 us | 4.0 us | 1.36 us | 0.6 us |
+| tSU;STA (repeated START set-up) | 5.24 us | 4.7 us | 1.56 us | 0.6 us |
+| tSU;STO (STOP set-up) | 5.24 us | 4.0 us | 1.56 us | 0.6 us |
+| tLOW | 5.04 us | 4.7 us | 1.36 us | 1.3 us |
+| tHIGH | 5.24 us | 4.0 us | 1.56 us | 0.6 us |
+| tBUF (STOP to next START) | 15.8 us | 4.7 us | 5.08 us | 1.3 us |
+
+Until 12 Oct 2026 the three START / STOP times were one tick (2.5 us at
+99.2 kHz), short of the standard-mode minimums. The fix cost one flip-flop and
+17 cells.
+
+## Formal proofs
+
+`formal/` proves five properties with SymbiYosys and Z3 (`python formal/run.py`,
+also the CI job `formal`): FIFO bounds and ordering (P1), the controller's way
+back to IDLE (P2), the idle-only mode latch (P3), pin safety in every mode (P4)
+and the I2C controller including the two-tick START / STOP phases (P5). Details
+and limits: [formal/README.md](../formal/README.md).
+
+## RP2 firmware
+
+`firmware/` holds a MicroPython bridge client and bring-up checklist for the
+demo board's RP2, which acts as UART host, SPI host and UART device. The same
+files run against the RTL in `test/unit/test_firmware.py`. See
+[firmware/README.md](../firmware/README.md) and
+[fpga_dry_run.md](fpga_dry_run.md).
 
 ## Area and sign-off
 
@@ -164,22 +193,23 @@ at a time (CI synthesis; placement adds about 14% over the synthesised area):
 | (One RX byte bus: made CI worse, reverted) | 14,217 um2 | 101% |
 | Timeouts removed | 12,608 um2 | 89%, detailed placement fails |
 | FIFO 4 -> 2 bytes | 11,711 um2 | 83%, detailed placement fails |
-| **I2C target removed (modes 100 / 101)** | **10,290 um2** | **73.1%: full sign-off clean** |
+| I2C target removed (modes 100 / 101) | 10,290 um2 | 73.1%: full sign-off clean |
+| **I2C START / STOP held half a period** | **10,474 um2** | **74.4%: full sign-off clean** |
 
-Sign-off of commit 2b210ac (CI):
+Sign-off of commit a68793c (CI run 38236365385; later commits do not change the RTL):
 
 | Metric | Value |
 | --- | --- |
-| Synthesised cell area | 10,290 um2, 832 cells |
-| Placement utilisation | 73.1% |
-| Final utilisation (with clock tree, hold and repair buffers) | 83.6% |
-| Setup slack at 25 MHz, worst corner (ss 100C 1.60 V) | +22.5 ns |
+| Synthesised cell area | 10,474 um2, 849 cells, 180 flip-flops |
+| Placement utilisation | 74.4% |
+| Final utilisation (with clock tree, hold and repair buffers) | 84.7% |
+| Setup slack at 25 MHz, worst corner (ss 100C 1.60 V) | +22.8 ns |
 | Hold slack, worst corner (ff -40C 1.95 V) | +0.11 ns, no violations |
 | Routing DRC / Magic DRC / LVS / antenna | 0 / 0 / 0 / 0 |
 | Gate-level simulation (cocotb suite) | pass |
-| Power, typical corner (tt 25C 1.80 V) | 0.61 mW (0.72 mW in the fast corner) |
+| Power, typical corner (tt 25C 1.80 V) | 0.63 mW (0.74 mW in the fast corner, ff -40C 1.95 V) |
 
 Features given up for the tile: timeouts, the 4-byte FIFO (now 2), and the
 I2C-host modes 100 / 101. If a feature is added back, check area first; the next
-cheapest cuts would be I2C 400 kHz only (about 280 um2, and it fixes the
-100 kHz timing issue above) and dropping loopback (about 230 um2).
+cheapest cuts would be I2C 400 kHz only (about 280 um2) and dropping loopback
+(about 230 um2).

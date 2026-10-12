@@ -194,8 +194,8 @@ async def test_bridge_client(dut):
         bringup.enter(board, M_UART_SPI)
         br = Bridge(board, M_UART_SPI)
         assert br.write_read(0, 0x9F, 2) == [0xEF, 0x40]
-        assert br.write(0, [0x06], spi_div=3) == 0x00
+        assert br.write(0, [0x04], spi_div=3) == 0x00
 
     await bridge(session)()
-    assert dev.frames[-1] == [0x06]
+    assert dev.frames[-1] == [0x04]
     assert watch.faults == [] and board.contention == []

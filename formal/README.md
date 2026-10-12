@@ -16,15 +16,15 @@ before.
 ## Running
 
 ```bash
-../.venv/Scripts/pip.exe install -r formal/requirements.txt
+.venv/Scripts/pip install -r formal/requirements.txt
 ```
 
 ```bash
-../.venv/Scripts/python.exe formal/run.py
+.venv/Scripts/python formal/run.py
 ```
 
 ```bash
-../.venv/Scripts/python.exe formal/run.py --selftest
+.venv/Scripts/python formal/run.py --selftest
 ```
 
 The first run proves every property and runs a cover task per file (8 tasks,
